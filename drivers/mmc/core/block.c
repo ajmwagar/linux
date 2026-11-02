@@ -2516,7 +2516,9 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	 * Set the read-only status based on the supported commands
 	 * and the write protect switch.
 	 */
-	md->read_only = mmc_blk_readonly(card);
+	/* CAT diagnostic image: all MMC disks permanently read-only at registration.
+	 * This intentionally cannot be undone through force_ro or BLKROSET. */
+	md->read_only = true;
 
 	if (mmc_host_can_cmd23(card->host) && mmc_card_can_cmd23(card))
 		md->flags |= MMC_BLK_CMD23;

@@ -12,6 +12,8 @@
 #include <linux/kernel.h>
 #include <linux/stddef.h>
 #include <linux/ioport.h>
+#include <linux/io.h>
+#include <asm/early_ioremap.h>
 #include <linux/delay.h>
 #include <linux/initrd.h>
 #include <linux/console.h>
@@ -278,6 +280,8 @@ u64 cpu_logical_map(unsigned int cpu)
 	return __cpu_logical_map[cpu];
 }
 
+#include "cat-boot-console.h"
+
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
 	setup_initial_init_mm(_text, _etext, _edata, _end);
@@ -289,7 +293,10 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	early_fixmap_init();
 	early_ioremap_init();
 
+	cat_console_start();
+
 	setup_machine_fdt(__fdt_pointer);
+	pr_info("CAT checkpoint: DTB parsing complete\n");
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
@@ -329,9 +336,16 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			   FW_BUG "Booted with MMU enabled!");
 	}
 
+	/* Preserve the live splash and forbid a conflicting linear RAM alias. */
+	if (memblock_reserve(0x90001000ULL, 0xe1000) ||
+	    memblock_mark_nomap(0x90001000ULL, 0xe1000))
+		panic("CAT framebuffer reservation failed");
+
 	arm64_memblock_init();
+	pr_info("CAT checkpoint: memory discovery complete\n");
 
 	paging_init();
+	pr_info("CAT checkpoint: paging initialization complete\n");
 
 	acpi_table_upgrade();
 
@@ -367,6 +381,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	init_task.thread_info.ttbr0 = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
 #endif
 
+	pr_info("CAT checkpoint: setup_arch complete\n");
 	if (boot_args[1] || boot_args[2] || boot_args[3]) {
 		pr_err("WARNING: x1-x3 nonzero in violation of boot protocol:\n"
 			"\tx1: %016llx\n\tx2: %016llx\n\tx3: %016llx\n"

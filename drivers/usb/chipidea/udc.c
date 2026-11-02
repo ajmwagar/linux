@@ -1900,6 +1900,8 @@ static int ci_udc_vbus_session(struct usb_gadget *_gadget, int is_active)
 	unsigned long flags;
 	int ret = 0;
 
+	dev_info(ci->dev, "CAT USB: vbus_session active=%d driver=%d\n",
+		 is_active, !!ci->driver);
 	spin_lock_irqsave(&ci->lock, flags);
 	ci->vbus_active = is_active;
 	spin_unlock_irqrestore(&ci->lock, flags);
@@ -1987,6 +1989,11 @@ static int ci_udc_pullup(struct usb_gadget *_gadget, int is_on)
 		return 0;
 
 	pm_runtime_get_sync(ci->dev);
+	dev_info(ci->dev,
+		 "CAT USB: pullup=%d role=%d vbus=%d cmd=%08x port=%08x otg=%08x\n",
+		 is_on, ci->role, ci->vbus_active,
+		 hw_read(ci, OP_USBCMD, ~0U), hw_read(ci, OP_PORTSC, ~0U),
+		 hw_read(ci, OP_OTGSC, ~0U));
 	if (is_on)
 		hw_write(ci, OP_USBCMD, USBCMD_RS, USBCMD_RS);
 	else

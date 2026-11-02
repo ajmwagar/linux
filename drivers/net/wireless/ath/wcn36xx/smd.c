@@ -21,6 +21,8 @@
 #include <linux/firmware.h>
 #include <linux/bitops.h>
 #include <linux/rpmsg.h>
+#include <linux/unaligned.h>
+#include "tx-compl.h"
 #include "smd.h"
 #include "firmware.h"
 
@@ -2655,14 +2657,19 @@ out:
 
 static int wcn36xx_smd_tx_compl_ind(struct wcn36xx *wcn, void *buf, size_t len)
 {
-	struct wcn36xx_hal_tx_compl_ind_msg *rsp = buf;
+	u32 status;
 
-	if (len != sizeof(*rsp)) {
-		wcn36xx_warn("Bad TX complete indication\n");
+	if (!wcn36xx_parse_tx_compl(buf, len, &status)) {
+		wcn36xx_warn("Invalid TX completion: rx=%zu declared=%u version=%u status=%u token=%u\n",
+			     len,
+			     len >= 8 ? get_unaligned_le32((u8 *)buf + 4) : 0,
+			     len >= 4 ? get_unaligned_le16((u8 *)buf + 2) : 0,
+			     len >= 12 ? get_unaligned_le32((u8 *)buf + 8) : 0,
+			     len >= 16 ? get_unaligned_le32((u8 *)buf + 12) : 0);
 		return -EIO;
 	}
 
-	wcn36xx_dxe_tx_ack_ind(wcn, rsp->status);
+	wcn36xx_dxe_tx_ack_ind(wcn, status);
 
 	return 0;
 }

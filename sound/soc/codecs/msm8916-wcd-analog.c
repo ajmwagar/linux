@@ -314,6 +314,7 @@ struct pm8916_wcd_analog_priv {
 	u32 vref_btn_cs[MBHC_MAX_BUTTONS];
 	/* Voltage threshold when microphone bias is ON */
 	u32 vref_btn_micb[MBHC_MAX_BUTTONS];
+	bool disable_mbhc;
 	unsigned int micbias1_cap_mode;
 	unsigned int micbias2_cap_mode;
 	unsigned int micbias_mv;
@@ -444,6 +445,9 @@ static int pm8916_mbhc_configure_bias(struct pm8916_wcd_analog_priv *priv,
 	struct snd_soc_component *component = priv->component;
 	u32 coarse, fine, reg_val, reg_addr;
 	int *vrefs, i;
+
+	if (priv->disable_mbhc)
+		return 0;
 
 	if (!micbias2_enabled) { /* use internal 100uA Current source */
 		/* Enable internal 2.2k Internal Rbias Resistor */
@@ -874,9 +878,40 @@ static int pm8916_wcd_analog_probe(struct snd_soc_component *component)
 			    RST_CTL_DIG_SW_RST_N_MASK,
 			    RST_CTL_DIG_SW_RST_N_REMOVE_RESET);
 
-	pm8916_wcd_setup_mbhc(priv);
+	if (!priv->disable_mbhc)
+		pm8916_wcd_setup_mbhc(priv);
+	else {
+		/* Quiesce inherited headset detection without touching MICBIAS1. */
+		err = snd_soc_component_write(component, CDC_D_INT_EN_CLR,
+				MBHC_SWITCH_INT | MBHC_BUTTON_PRESS_DET |
+				MBHC_BUTTON_RELEASE_DET);
+		if (err < 0)
+			goto err_supplies;
+		err = snd_soc_component_update_bits(component, CDC_A_MBHC_FSM_CTL,
+				CDC_A_MBHC_FSM_CTL_MBHC_FSM_EN_MASK |
+				CDC_A_MBHC_FSM_CTL_BTN_ISRC_CTRL_MASK, 0);
+		if (err < 0)
+			goto err_supplies;
+		err = snd_soc_component_update_bits(component, CDC_A_MBHC_DET_CTL_1,
+				CDC_A_MBHC_DET_CTL_L_DET_EN |
+				CDC_A_MBHC_DET_CTL_MBHC_BIAS_EN, 0);
+		if (err < 0)
+			goto err_supplies;
+		err = snd_soc_component_update_bits(component, CDC_A_MICB_1_INT_RBIAS,
+				MICB_1_INT_TX2_INT_RBIAS_EN_MASK, 0);
+		if (err < 0)
+			goto err_supplies;
+		err = snd_soc_component_update_bits(component, CDC_D_CDC_DIG_CLK_CTL,
+				DIG_CLK_CTL_D_MBHC_CLK_EN_MASK, 0);
+		if (err < 0)
+			goto err_supplies;
+	}
 
 	return 0;
+
+err_supplies:
+	regulator_bulk_disable(ARRAY_SIZE(priv->supplies), priv->supplies);
+	return err;
 }
 
 static void pm8916_wcd_analog_remove(struct snd_soc_component *component)
@@ -1109,6 +1144,9 @@ static int pm8916_wcd_analog_set_jack(struct snd_soc_component *component,
 {
 	struct pm8916_wcd_analog_priv *wcd = snd_soc_component_get_drvdata(component);
 
+	if (wcd->disable_mbhc && jack)
+		return -EOPNOTSUPP;
+
 	wcd->jack = jack;
 
 	return 0;
@@ -1277,6 +1315,10 @@ static int pm8916_wcd_analog_parse_dt(struct device *dev,
 	of_property_read_u32(dev->of_node, "qcom,micbias-lvl",
 			     &priv->micbias_mv);
 
+	priv->disable_mbhc = of_property_read_bool(dev->of_node, "cat,handset-capture-only");
+	if (priv->disable_mbhc)
+		return 0;
+
 	if (of_property_read_bool(dev->of_node,
 				  "qcom,hphl-jack-type-normally-open"))
 		priv->hphl_jack_type_normally_open = true;
@@ -1315,6 +1357,7 @@ static int pm8916_wcd_analog_parse_dt(struct device *dev,
 
 static int pm8916_wcd_analog_spmi_probe(struct platform_device *pdev)
 {
+	struct snd_soc_component_driver *component_driver;
 	struct pm8916_wcd_analog_priv *priv;
 	struct device *dev = &pdev->dev;
 	int ret, i, irq;
@@ -1336,6 +1379,9 @@ static int pm8916_wcd_analog_spmi_probe(struct platform_device *pdev)
 		dev_err(dev, "Failed to get regulator supplies %d\n", ret);
 		return ret;
 	}
+
+	if (priv->disable_mbhc)
+		goto register_component;
 
 	irq = platform_get_irq_byname(pdev, "mbhc_switch_int");
 	if (irq < 0)
@@ -1381,9 +1427,19 @@ static int pm8916_wcd_analog_spmi_probe(struct platform_device *pdev)
 		}
 	}
 
+register_component:
 	dev_set_drvdata(dev, priv);
 
-	return devm_snd_soc_register_component(dev, &pm8916_wcd_analog,
+	component_driver = devm_kmemdup(dev, &pm8916_wcd_analog,
+				       sizeof(*component_driver), GFP_KERNEL);
+	if (!component_driver)
+		return -ENOMEM;
+	if (priv->disable_mbhc) {
+		component_driver->idle_bias_on = 0;
+		component_driver->use_pmdown_time = 0;
+	}
+
+	return devm_snd_soc_register_component(dev, component_driver,
 				      pm8916_wcd_analog_dai,
 				      ARRAY_SIZE(pm8916_wcd_analog_dai));
 }

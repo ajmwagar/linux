@@ -83,6 +83,30 @@
 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
 	 */
 SYM_CODE_START(primary_entry)
+	// CAT S22: eight 80-row black/white bands at Linux entry.
+	// Scratch x9-x12 only; preserve boot arguments x0-x3.
+	mov	x9, #0x1000
+	movk	x9, #0x9000, lsl #16
+	mov	x10, #640
+.Lcat_entry_row:
+	// Count down rows: alternating groups, independent of RGB ordering.
+	mov	x11, #80
+	sub	x12, x10, #1
+	udiv	x12, x12, x11
+	tbz	x12, #0, .Lcat_black
+	mov	w12, #255
+	b	.Lcat_row_color
+.Lcat_black:
+	mov	w12, #0
+.Lcat_row_color:
+	mov	x11, #1440
+.Lcat_entry_pixel:
+	strb	w12, [x9], #1
+	subs	x11, x11, #1
+	b.ne	.Lcat_entry_pixel
+	subs	x10, x10, #1
+	b.ne	.Lcat_entry_row
+	dsb	sy
 	bl	record_mmu_state
 	bl	preserve_boot_args
 
@@ -127,6 +151,17 @@ SYM_CODE_START(primary_entry)
 	 * the TCR will have been set.
 	 */
 	bl	__cpu_setup			// initialise processor
+	// Second checkpoint: bottom 320 rows white, before MMU switch.
+	mov	x9, #0x1800
+	movk	x9, #0x9007, lsl #16 // 0x90001000 + 320*1440
+	mov	x10, #0x0800
+	movk	x10, #7, lsl #16   // 460800 bytes
+	mov	w12, #255
+.Lcat_cpu_setup_done:
+	strb	w12, [x9], #1
+	subs	x10, x10, #1
+	b.ne	.Lcat_cpu_setup_done
+	dsb	sy
 	b	__primary_switch
 SYM_CODE_END(primary_entry)
 

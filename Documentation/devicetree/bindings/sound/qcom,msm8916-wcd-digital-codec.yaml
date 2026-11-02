@@ -23,6 +23,8 @@ properties:
 
       - const: qcom,msm8916-wcd-digital-codec
 
+      - const: qcom,qm215-wcd-digital-codec
+
   reg:
     maxItems: 1
 
@@ -30,9 +32,8 @@ properties:
     maxItems: 2
 
   clock-names:
-    items:
-      - const: ahbix-clk
-      - const: mclk
+    minItems: 1
+    maxItems: 2
 
   '#sound-dai-cells':
     const: 1
@@ -46,6 +47,27 @@ required:
 
 allOf:
   - $ref: dai-common.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: qcom,qm215-wcd-digital-codec
+    then:
+      properties:
+        clocks:
+          maxItems: 1
+          description: Q6AFE INTERNAL_DIGITAL_CODEC_CORE, firmware clock 0x303.
+        clock-names:
+          items:
+            - const: core
+    else:
+      properties:
+        clocks:
+          minItems: 2
+        clock-names:
+          items:
+            - const: ahbix-clk
+            - const: mclk
 
 unevaluatedProperties: false
 

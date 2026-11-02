@@ -1,0 +1,468 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * MediaTek MT6739 (MT6739WW) SoC
+ *
+ * Copyright (c) 2025 The Linux Foundation
+ *
+ * Facts in this file were derived from the TCL/ALPS vendor tree shipped as
+ * source in /opt/tcl-mt6739/kernel-4.4 (GPL-2.0).  Only register addresses,
+ * interrupt numbers and other facts were taken from it; no vendor code was
+ * copied.  Every node carries a comment naming the vendor file and line the
+ * facts came from.
+ *
+ * MT6739 is a 4 x Cortex-A53 SoC paired with the MT6357 PMIC.  It is not
+ * supported upstream at the time of writing, so the compatible strings below
+ * are new and the number-only <clock id> phandles are placeholders: upstream
+ * clock/PMIC/pinctrl dt-bindings do not exist for this SoC yet.  Each numeric
+ * clock id is annotated with the vendor clock id it stands for so that the
+ * binding can be replaced mechanically once include/dt-bindings/clock/
+ * mt6739-clk.h lands (ids from kernel-4.4/include/dt-bindings/clock/
+ * mt6739-clk.h).
+ */
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	compatible = "mediatek,mt6739";
+	interrupt-parent = <&sysirq>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	chosen {
+	};
+
+	/*
+	 * PSCI 0.2.  arch/arm64/boot/dts/mediatek/mt6739.dts:165-171.
+	 * The CPUs are released by the ATF/bootloader, not by the kernel.
+	 */
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	/*
+	 * 4 x Cortex-A53, no big.LITTLE.  Vendor states cpu-release-addr
+	 * 0x40000200 for every core (same SRAM mailbox) and no
+	 * operating-points-v2 (vendor uses its own DVFS driver).
+	 * arch/arm64/boot/dts/mediatek/mt6739.dts:33-95.
+	 */
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0>;
+			enable-method = "psci";
+			next-level-cache = <&l2_cache>;
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x1>;
+			enable-method = "psci";
+			next-level-cache = <&l2_cache>;
+		};
+
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x2>;
+			enable-method = "psci";
+			next-level-cache = <&l2_cache>;
+		};
+
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x3>;
+			enable-method = "psci";
+			next-level-cache = <&l2_cache>;
+		};
+
+		l2_cache: l2-cache {
+			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
+		};
+	};
+
+	/*
+	 * arch/arm64/boot/dts/mediatek/mt6739.dts:27-31.
+	 * GIC_PPI 7 is the PMU interrupt used by the vendor DT; ARM ships
+	 * GICv3 redistributors with this SoC, so armv8_pmu uses the PPI.
+	 */
+	pmu {
+		compatible = "arm,armv8-pmuv3";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_LOW>;
+	};
+
+	/*
+	 * Physical DRAM.  Vendor DT declares 0x40000000 + 0x20000000
+	 * (arch/arm64/boot/dts/mediatek/mt6739.dts:169-172) because that is
+	 * the window the 32-bit LK/bootloader maps; the real part has 916 MiB
+	 * (0x39400000) usable, with the top of the range reserved for the
+	 * modem/consys/ATF carve-outs (see vendor consys alloc-ranges
+	 * 0x40000000..0x38000000, same file :227).  Board files override the
+	 * size with the real value; this is the SoC maximum.
+	 */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x39400000>;
+	};
+
+	/* arch/arm64/boot/dts/mediatek/mt6739.dts:203-229 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		pstore@44410000 {
+			compatible = "ramoops";
+			reg = <0 0x44410000 0 0xe0000>;
+			record-size = <0x40000>;
+			console-size = <0x40000>;
+			ftrace-size = <0x20000>;
+		};
+	};
+
+	/*
+	 * GICv3.  Distributor at 0x0c000000, a single 2 MiB redistributor
+	 * region at 0x0c080000.  The vendor DT also lists the sysirq block
+	 * here as a third reg (mt6739.dts:231-245); upstream describes the
+	 * polarity controller as a separate node (&sysirq below).
+	 */
+	gic: interrupt-controller@c000000 {
+		compatible = "arm,gic-v3";
+		#interrupt-cells = <3>;
+		#address-cells = <0>;
+		interrupt-controller;
+		reg = <0 0x0c000000 0 0x40000>,	/* GICD */
+		      <0 0x0c080000 0 0x200000>;	/* GICR */
+		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
+	/*
+	 * MediaTek "sysirq" polarity fixup block, needed because the GIC
+	 * lines are wired with inverted/level semantics that the vendor
+	 * bootloader configures.  mt6739.dts:246-254 and the mt6577-sysirq
+	 * fallback is already supported upstream (mt6795 uses the same pair).
+	 */
+	sysirq: interrupt-controller@10200620 {
+		compatible = "mediatek,mt6739-sysirq",
+			     "mediatek,mt6577-sysirq";
+		#interrupt-cells = <3>;
+		interrupt-controller;
+		interrupt-parent = <&gic>;
+		reg = <0 0x10200620 0 0x20>;
+	};
+
+	/* arch/arm64/boot/dts/mediatek/mt6739.dts:262-271 */
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW>;
+	};
+
+	/* arch/arm64/boot/dts/mediatek/mt6739.dts:273-277 */
+	clk26m: clock-26m {
+		compatible = "fixed-clock";
+		clock-frequency = <26000000>;
+		#clock-cells = <0>;
+	};
+
+	/* arch/arm64/boot/dts/mediatek/mt6739.dts:301-306 */
+	clk32k: clock-32k {
+		compatible = "fixed-clock";
+		clock-frequency = <32000>;
+		#clock-cells = <0>;
+	};
+
+	/*
+	 * All peripherals live behind a single 32-bit AXI aperture at
+	 * 0x10000000 (plus the MM/GPU apertures at 0x14000000/0x17000000
+	 * which are out of foundation scope).  mt6739.dts:279-1317.
+	 */
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * TOPCKGEN.  Vendor combines topckgen + apmixed in one node
+		 * with two reg ranges (mt6739.dts:279-285); upstream style is
+		 * one syscon per IP block, as done for mt6795/mt8183.
+		 * Clock register layout: kernel-4.4/drivers/clk/mediatek/
+		 * clk-mt6739.c:294-334 (CLK_CFG_0 at +0x040, CLK_CFG_UPDATE
+		 * at +0x004, mux clear/set at +0x004/+0x008 of each group).
+		 */
+		topckgen: syscon@10000000 {
+			compatible = "mediatek,mt6739-topckgen", "syscon";
+			reg = <0 0x10000000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		/* mt6739.dts:286-291; gate regs at +0x080..+0xc8, clk-mt6739.c:829-847 */
+		infracfg: syscon@10001000 {
+			compatible = "mediatek,mt6739-infracfg", "syscon";
+			reg = <0 0x10001000 0 0x1000>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		/* mt6739.dts:452-458; APMIXED PLL registers at +0x0220.., clk-mt6739.c:1167-1180 */
+		apmixedsys: syscon@1000c000 {
+			compatible = "mediatek,mt6739-apmixedsys", "syscon";
+			reg = <0 0x1000c000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		/*
+		 * Pin configuration is done in the GPIO block at
+		 * 0x10005000 (vendor: gpio@10005000, mt6739.dts:392-400,
+		 * syscfg_pctl_a@10005000 :397-401); the EINT block lives at
+		 * 0x1000b000 (vendor: pinctrl@1000b000, :406-424).  Upstream
+		 * MTK pinctrl expects exactly this "base" + "eint" pair, cf.
+		 * mt6795.dtsi:366-377.  169 pins (GPIO0..GPIO168), 183 EINTs.
+		 */
+		pio: pinctrl@10005000 {
+			compatible = "mediatek,mt6739-pinctrl";
+			reg = <0 0x10005000 0 0x1000>,
+			      <0 0x1000b000 0 0x1000>;
+			reg-names = "base", "eint";
+			interrupts = <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&pio 0 0 169>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+
+		/*
+		 * PMIC wrapper (PMICSPI).  mt6739.dts:464-473.
+		 * The PMIC SPI clock is not modelled by the vendor clock
+		 * driver (no CLK_TOP_PMICSPI gate in
+		 * drivers/clk/mediatek/clk-mt6739.c); it is left running by
+		 * the bootloader/SPM, hence the fixed 26 MHz reference here.
+		 * The 1 = CLK_INFRA_PMIC_AP gate (mt6739-clk.h:119) must be
+		 * driven by the future driver.
+		 */
+		pwrap: pwrap@1000d000 {
+			compatible = "mediatek,mt6739-pwrap";
+			reg = <0 0x1000d000 0 0x1000>;
+			reg-names = "pwrap";
+			interrupts = <GIC_SPI 175 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&clk26m>, <&infracfg 1>; /* PMIC_AP */
+			clock-names = "spi", "wrap";
+			status = "disabled";
+		};
+
+		/* TOPRGU / watchdog.  mt6739.dts:432-437 */
+		watchdog: watchdog@10007000 {
+			compatible = "mediatek,mt6739-wdt";
+			reg = <0 0x10007000 0 0x1000>;
+			interrupts = <GIC_SPI 139 IRQ_TYPE_LEVEL_LOW>;
+			#reset-cells = <1>;
+		};
+
+		/* APXGPT general purpose timer.  mt6739.dts:438-444 */
+		timer: timer@10008000 {
+			compatible = "mediatek,mt6739-timer",
+				     "mediatek,mt6577-timer";
+			reg = <0 0x10008000 0 0x1000>;
+			interrupts = <GIC_SPI 166 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&clk32k>;
+		};
+
+		/* 26 MHz crystal calibration / frequency meter.  mt6739.dts:459-463 */
+		fhctl: clock-controller@1000ce00 {
+			compatible = "mediatek,mt6739-fhctl";
+			reg = <0 0x1000ce00 0 0x100>;
+			status = "disabled";
+		};
+
+		/* AP DMA controller used by UART/I2C/SPI.  mt6739.dts:1169-1176 */
+		apdma: dma-controller@11000000 {
+			compatible = "mediatek,mt6739-apdma",
+				     "mediatek,mt6577-apdma";
+			reg = <0 0x11000000 0 0x1000>;
+			interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_LOW>,
+				     <GIC_SPI 105 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg 40>; /* CLK_INFRA_AP_DMA */
+			clock-names = "apdma";
+			#dma-cells = <1>;
+			dma-requests = <32>;
+			status = "disabled";
+		};
+
+		/*
+		 * UART0 - the debug console.  Only reg 0 (the UART itself) is
+		 * described; the vendor DMA windows at 0x11000400/0x11000480
+		 * (mt6739.dts:1170-1176) belong to &apdma.
+		 * Clock ids: 47 = CLK_TOP_UART_SEL, 20 = CLK_INFRA_UART0.
+		 */
+		uart0: serial@11002000 {
+			compatible = "mediatek,mt6739-uart",
+				     "mediatek,mt6577-uart";
+			reg = <0 0x11002000 0 0x400>;
+			interrupts = <GIC_SPI 91 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 47>, <&infracfg 20>;
+			clock-names = "baud", "bus";
+			dmas = <&apdma 0>, <&apdma 1>;
+			dma-names = "tx", "rx";
+			status = "disabled";
+		};
+
+		/* mt6739.dts:1185-1193; 20 = CLK_INFRA_UART0 shared with uart1 on this SoC */
+		uart1: serial@11003000 {
+			compatible = "mediatek,mt6739-uart",
+				     "mediatek,mt6577-uart";
+			reg = <0 0x11003000 0 0x400>;
+			interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 47>, <&infracfg 20>;
+			clock-names = "baud", "bus";
+			status = "disabled";
+		};
+
+		/* AUXADC.  mt6739.dts:1159-1166; 34 = CLK_INFRA_AUXADC */
+		auxadc: adc@11001000 {
+			compatible = "mediatek,mt6739-auxadc",
+				     "mediatek,mt6577-auxadc";
+			reg = <0 0x11001000 0 0x1000>;
+			interrupts = <GIC_SPI 74 IRQ_TYPE_EDGE_FALLING>;
+			clocks = <&infracfg 34>;
+			clock-names = "main";
+			#io-channel-cells = <1>;
+			status = "disabled";
+		};
+
+		/*
+		 * I2C.  mt6739.dts:1222-1294.  Only the instances the board
+		 * actually uses are described here; 9 = CLK_INFRA_I2C0,
+		 * 12 = CLK_INFRA_I2C3, 62 = CLK_TOP_I2C_SEL.
+		 */
+		i2c0: i2c@11007000 {
+			compatible = "mediatek,mt6739-i2c",
+				     "mediatek,mt6577-i2c";
+			reg = <0 0x11007000 0 0x1000>,
+			      <0 0x11000100 0 0x80>;
+			interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 62>, <&infracfg 9>, <&infracfg 40>;
+			clock-names = "main", "main-source", "dma";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* mt6739.dts:1258-1270 */
+		i2c3: i2c@1100f000 {
+			compatible = "mediatek,mt6739-i2c",
+				     "mediatek,mt6577-i2c";
+			reg = <0 0x1100f000 0 0x1000>,
+			      <0 0x11000280 0 0x80>;
+			interrupts = <GIC_SPI 87 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 62>, <&infracfg 12>, <&infracfg 40>;
+			clock-names = "main", "main-source", "dma";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * SPI0/SPI1 drive the two panels on this device (see the
+		 * board DT).  mt6739.dts:1294-1315.  Clock ids used by the
+		 * vendor: CLK_TOP_SYSPLL3_D2 (10), CLK_TOP_SPI_SEL (48),
+		 * CLK_INFRA_SPI0 (27).  Upstream mtk-spi does not know this
+		 * SoC yet, hence the explicit mt6739 compatible.
+		 */
+		spi0: spi@1100a000 {
+			compatible = "mediatek,mt6739-spi";
+			reg = <0 0x1100a000 0 0x1000>;
+			interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 10>, <&topckgen 48>, <&infracfg 27>;
+			clock-names = "parent-clk", "sel-clk", "spi-clk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		spi1: spi@11010000 {
+			compatible = "mediatek,mt6739-spi";
+			reg = <0 0x11010000 0 0x1000>;
+			interrupts = <GIC_SPI 122 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&topckgen 10>, <&topckgen 48>, <&infracfg 28>;
+			clock-names = "parent-clk", "sel-clk", "spi-clk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* Keypad controller.  mt6739.dts:479-484.  Unused on this board
+		 * (the physical keypad is an I2C SN7326, see the board DT).
+		 */
+		keypad: keypad@10010000 {
+			compatible = "mediatek,mt6739-keypad",
+				     "mediatek,mt6779-keypad";
+			reg = <0 0x10010000 0 0x1000>;
+			interrupts = <GIC_SPI 176 IRQ_TYPE_EDGE_FALLING>;
+			clocks = <&clk26m>;
+			clock-names = "kpd";
+			status = "disabled";
+		};
+
+		/*
+		 * MMC.  Device uses eMMC on msdc0 only (A-only partitions, no
+		 * SD slot populated).  mt6739.dts:1431-1446; the second reg
+		 * range is the MSDC pad macro/tuning window.
+		 */
+		mmc0: mmc@11230000 {
+			compatible = "mediatek,mt6739-mmc";
+			reg = <0 0x11230000 0 0x1000>,
+			      <0 0x11cd0000 0 0x1000>;
+			interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg 28>,		/* CLK_INFRA_MSDC0 */
+				 <&topckgen 49>,		/* CLK_TOP_MSDC50_0_HCLK_SEL */
+				 <&topckgen 50>;		/* CLK_TOP_MSDC50_0_SEL */
+			clock-names = "source", "hclk", "source_cg";
+			status = "disabled";
+		};
+
+		/* mt6739.dts:1438-1446 */
+		mmc1: mmc@11240000 {
+			compatible = "mediatek,mt6739-mmc";
+			reg = <0 0x11240000 0 0x1000>,
+			      <0 0x11c40000 0 0x1000>;
+			interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg 28>,
+				 <&topckgen 49>,
+				 <&topckgen 50>;
+			clock-names = "source", "hclk", "source_cg";
+			status = "disabled";
+		};
+
+		/*
+		 * USB2.0 device/host.  mt6739.dts:1448-1466.  mt6739 uses the
+		 * MTK "musb" core, not mtu3, so the future driver is
+		 * drivers/usb/musb/mediatek.c.  Kept disabled until that path
+		 * is validated on hardware.
+		 */
+		usb0: usb@11200000 {
+			compatible = "mediatek,mt6739-musb";
+			reg = <0 0x11200000 0 0x10000>,
+			      <0 0x11cc0000 0 0x10000>;
+			interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&infracfg 8>,		/* CLK_INFRA_ICUSB */
+				 <&topckgen 30>;	/* CLK_TOP_UNIVPLL3_D4 */
+			clock-names = "usb0", "usb0_clk_univpll3_d4";
+			status = "disabled";
+		};
+	};
+};

@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * TCL 4058G (Gflip6_NA_OM) - MediaTek MT6739 clamshell phone
+ *
+ * Copyright (c) 2025 The Linux Foundation
+ *
+ * Board facts below were recovered from the device itself, not guessed:
+ * the vendor `dtbo.img` from ~/Backups/tcl-flip2-rom carries the real
+ * per-SKU overlay.  It was unpacked with the Android DTBO header
+ * (magic 0xd7b7ab1e, one entry) and decompiled; "fragment@N" references
+ * in the comments point at that decompiled overlay.  Nothing from the
+ * vendor overlay was copied - only GPIO numbers, addresses and
+ * regulator/panel facts, rewritten in mainline style.
+ *
+ * Notable: this board has no touchscreen, and the keypad matrix is an
+ * external I2C controller (SN7326 at 0x58), not the MT6739 keypad block.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "mt6739.dtsi"
+
+/ {
+	model = "TCL 4058G (Gflip6_NA_OM)";
+	compatible = "tcl,4058g", "mediatek,mt6739";
+
+	/*
+	 * `androidboot` style cmdline of the vendor image used
+	 * console=ttyMT0,921600n1; the MTK ttyMT naming maps to &uart0.
+	 * fragment@0 (chosen) only overrides the framebuffer atags.
+	 */
+	chosen {
+		stdout-path = &uart0;
+	};
+
+	/*
+	 * 916 MiB usable of the 1 GiB DRAM, split from the SoC default in
+	 * mt6739.dtsi.  Same value the running Android 11 kernel reports;
+	 * the top 108 MiB go to the modem/consys/ATF carve-outs.
+	 */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x39400000>;
+	};
+
+	/*
+	 * Lid/hall switch.  Vendor: fragment@24 "ClamShell_key",
+	 * gpios = <&pio 5 ACTIVE_LOW>, EV_KEY code 0xfc, debounce 15 ms.
+	 * Upstream models a clamshell hall sensor as SW_LID on EV_SW, which
+	 * lets userspace (and the future sub-panel power policy) react
+	 * without a keymap.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&lid_pins>;
+
+		lid-switch {
+			label = "lid";
+			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			debounce-interval = <15>;
+			wakeup-source;
+		};
+	};
+};
+
+&pio {
+	/*
+	 * UART0 console: GPIO20 = UART0RX, GPIO21 = UART0TX, both mux
+	 * function 1 (vendor: fragment@13 uart0_rx_set@20 / uart0_tx_set@21,
+	 * pinmux <0x1401> / <0x1501>; function names from
+	 * kernel-4.4/drivers/pinctrl/mediatek/pinctrl-mtk-mt6739.h).
+	 */
+	uart0_pins: uart0-pins {
+		pins {
+			pinmux = <20 1>, <21 1>;
+			drive-strength = <4>;
+		};
+	};
+
+	/* fragment@20: pinmux <0x8001> <0x8101> = GPIO128 SDA, GPIO129 SCL, function 1 (I2C0) */
+	i2c0_pins: i2c0-pins {
+		pins {
+			pinmux = <128 1>, <129 1>;
+			drive-strength = <4>;
+			bias-pull-up = <1>;
+		};
+	};
+
+	/*
+	 * SPI0 (main panel): pinmux <0x1f01 0x2001 0x2101 0x2201>
+	 * = GPIO31 SPI0_A_CSB, GPIO32 SPI0_A_CLK, GPIO33 SPI0_A_MI,
+	 * GPIO34 SPI0_A_MO, all function 1.  Vendor: fragment@17 lcd_spi_on.
+	 */
+	spi0_pins: spi0-pins {
+		pins {
+			pinmux = <31 1>, <32 1>, <33 1>, <34 1>;
+			drive-strength = <3>;
+		};
+	};
+
+	/*
+	 * SPI1 (sub screen): pinmux <0x1001 0x1101 0x1201 0x1301>
+	 * = GPIO16 SPI1_A_CSB, GPIO17 SPI1_A_CLK, GPIO18 SPI1_A_MI,
+	 * GPIO19 SPI1_A_MO, function 1.  Vendor: fragment@17 lcd_spi1_on.
+	 */
+	spi1_pins: spi1-pins {
+		pins {
+			pinmux = <16 1>, <17 1>, <18 1>, <19 1>;
+			drive-strength = <3>;
+		};
+	};
+
+	/* fragment@23: pinmux <0x500> = GPIO5 as plain GPIO, input */
+	lid_pins: lid-pins {
+		pins {
+			pinmux = <5 0>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	/* fragment@21: keypad interrupt on GPIO6, reset line on GPIO22 */
+	keypad_pins: keypad-pins {
+		pins {
+			pinmux = <6 0>, <22 0>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+};
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins>;
+	status = "okay";
+};
+
+/*
+ * eMMC.  A-only partition layout, no SD slot: only msdc0 is wired.
+ * Enable this node last during bring-up (see docs/foundation-plan.md).
+ */
+&mmc0 {
+	bus-width = <8>;
+	max-frequency = <200000000>;
+	non-removable;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	status = "okay";
+};
+
+/*
+ * I2C0 (400 kHz, open drain - vendor fragment@31) carries:
+ *   0x58  SN7326 keypad matrix controller (fragment@21)
+ *   0x3e  LCD bias/backlight controller (fragment@31 i2c_lcd_bias)
+ *   0x5d  capacitive touch controller (fragment@31) - present in the
+ *         vendor DT but not functional on this SKU (no touch panel)
+ */
+&i2c0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * Matrix keypad.  Vendor compatible string is an out-of-tree binding
+	 * ("sn7326,matrix-keypad" with sn7326,keymap-value = 23 packed
+	 * scan-code/key pairs).  The keymap and the reset GPIO are real
+	 * hardware facts; the binding is not upstream, so this node stays
+	 * disabled until a driver exists (docs/foundation-plan.md step 9).
+	 */
+	keypad@58 {
+		compatible = "sn7326,matrix-keypad";
+		reg = <0x58>;
+		interrupt-parent = <&pio>;
+		interrupts = <6 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&pio 22 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&keypad_pins>;
+		status = "disabled";
+	};
+
+	/* fragment@31: LCD bias supply, no upstream driver yet */
+	lcd-bias@3e {
+		compatible = "tcl,i2c-lcd-bias";
+		reg = <0x3e>;
+		status = "disabled";
+	};
+};
+
+/*
+ * ---------------------------------------------------------------------
+ * Displays
+ * ---------------------------------------------------------------------
+ * Two SPI panels are described by the vendor overlay, and which one is
+ * the "main" 240x320 screen is still an open question (see
+ * docs/foundation-plan.md, "Open questions"):
+ *
+ *  - fragment@18 puts a 240x320 panel on spi0 ("mediatek,lcd-spi-display",
+ *    lcm-width 240 / lcm-height 320, 56 MHz, TE GPIO83, reset GPIO25,
+ *    "wrx" GPIO23, strap GPIOs 110/111).  240x320 matches the known main
+ *    panel size, and MTK's DISP block drives that node, so spi0 is
+ *    described as the main panel here.
+ *  - fragment@19 puts a 128x128 panel on spi1 ("mediatek,st7735s",
+ *    10 MHz, reset GPIO122, dc GPIO13, strap GPIOs 106/107).  That is the
+ *    sub screen.  The vendor string says ST7735S; the board notes for
+ *    this unit say ST7789V2 - both are Sitronix SPI controllers and the
+ *    strap GPIOs exist precisely because the factory fits panel
+ *    variants, so this needs to be confirmed on hardware.
+ */
+
+&spi0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi0_pins>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "sitronix,st7789v";
+		reg = <0>;
+		spi-max-frequency = <56000000>;
+		spi-cpol;
+		spi-cpha;
+		reset-gpios = <&pio 25 GPIO_ACTIVE_LOW>;
+		/* vendor "lcm-wrx" acts as the D/C line in SPI mode */
+		dc-gpios = <&pio 23 GPIO_ACTIVE_HIGH>;
+		rotation = <0>;
+		status = "disabled";
+	};
+};
+
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi1_pins>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "sitronix,st7735s";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		spi-cpol;
+		spi-cpha;
+		reset-gpios = <&pio 122 GPIO_ACTIVE_LOW>;
+		dc-gpios = <&pio 13 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+	};
+};

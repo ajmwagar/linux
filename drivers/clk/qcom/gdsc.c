@@ -161,6 +161,16 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 			goto err_disable_supply;
 	}
 
+	if (!strcmp(sc->pd.name, "oxili_cx_gdsc")) {
+		u32 val;
+		int r = regmap_read(sc->regmap, sc->gdscr, &val);
+
+		if (!r)
+			pr_info("CAT GPU GDSC: before reg=%#x val=%#x target=%d\n",
+				sc->gdscr, val, status);
+		else
+			pr_info("CAT GPU GDSC: before read-error=%d\n", r);
+	}
 	ret = gdsc_update_collapse_bit(sc, status == GDSC_OFF);
 
 	/* If disabling votable gdscs, don't poll on status */
@@ -189,6 +199,16 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 	}
 
 	ret = gdsc_poll_status(sc, status);
+	if (!strcmp(sc->pd.name, "oxili_cx_gdsc")) {
+		u32 val;
+		int r = regmap_read(sc->regmap, sc->gdscr, &val);
+
+		if (!r)
+			pr_info("CAT GPU GDSC: after reg=%#x val=%#x poll=%d\n",
+				sc->gdscr, val, ret);
+		else
+			pr_info("CAT GPU GDSC: after read-error=%d poll=%d\n", r, ret);
+	}
 	WARN(ret, "%s status stuck at 'o%s'", sc->pd.name, status ? "ff" : "n");
 
 	if (!ret && status == GDSC_OFF) {

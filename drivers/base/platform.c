@@ -1496,16 +1496,22 @@ static int platform_probe(struct device *_dev)
 		return -ENXIO;
 
 	ret = of_clk_set_defaults(_dev->of_node, false);
+	if (!strcmp(dev_name(_dev), "1c40000.iommu"))
+		dev_info(_dev, "CAT GPU PROBE: clock-defaults=%d\n", ret);
 	if (ret < 0)
 		return ret;
 
 	ret = dev_pm_domain_attach(_dev, PD_FLAG_ATTACH_POWER_ON |
 					 PD_FLAG_DETACH_POWER_OFF);
+	if (!strcmp(dev_name(_dev), "1c40000.iommu"))
+		dev_info(_dev, "CAT GPU PROBE: domain-attach=%d\n", ret);
 	if (ret)
 		goto out;
 
 	if (drv->probe)
 		ret = drv->probe(dev);
+	if (!strcmp(dev_name(_dev), "1c40000.iommu"))
+		dev_info(_dev, "CAT GPU PROBE: driver-probe=%d\n", ret);
 
 out:
 	if (drv->prevent_deferred_probe && ret == -EPROBE_DEFER) {

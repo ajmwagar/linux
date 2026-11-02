@@ -2,6 +2,7 @@
 // Copyright (c) 2016, The Linux Foundation. All rights reserved.
 
 #include <linux/module.h>
+#include <linux/io.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
@@ -226,6 +227,12 @@ struct wcd_iir_filter_ctl {
 
 struct msm8916_wcd_digital_priv {
 	struct clk *ahbclk, *mclk;
+	void __iomem *base;
+	struct regmap *regmap;
+	bool qm215;
+	bool core_active;
+	u8 saved_core_bits[3];
+	u8 saved_hpf[2];
 };
 
 static const unsigned long rx_gain_reg[] = {
@@ -353,6 +360,11 @@ static SOC_ENUM_SINGLE_DECL(rx2_dcb_cutoff_enum, LPASS_CDC_RX2_B4_CTL, 0,
 static SOC_ENUM_SINGLE_DECL(rx3_dcb_cutoff_enum, LPASS_CDC_RX3_B4_CTL, 0,
 			    dc_blocker_cutoff_text);
 
+static int qm215_update(struct snd_soc_component *component, unsigned int reg,
+		unsigned int mask, unsigned int value);
+static int qm215_read(struct snd_soc_component *component, unsigned int reg,
+		unsigned int *value);
+
 static int msm8x16_wcd_codec_set_iir_gain(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *kcontrol, int event)
 {
@@ -366,6 +378,15 @@ static int msm8x16_wcd_codec_set_iir_gain(struct snd_soc_dapm_widget *w,
 			reg = LPASS_CDC_IIR1_GAIN_B1_CTL;
 		else if (w->shift == 1)
 			reg = LPASS_CDC_IIR2_GAIN_B1_CTL;
+		if (((struct msm8916_wcd_digital_priv *)
+		     snd_soc_component_get_drvdata(component))->qm215) {
+			unsigned int checked;
+			int ret = qm215_read(component, reg, &checked);
+
+			if (ret)
+				return ret;
+			return snd_soc_component_write(component, reg, checked);
+		}
 		value = snd_soc_component_read(component, reg);
 		snd_soc_component_write(component, reg, value);
 		break;
@@ -577,6 +598,32 @@ static int msm8916_wcd_digital_enable_interpolator(
 {
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 
+	struct msm8916_wcd_digital_priv *p =
+		snd_soc_component_get_drvdata(component);
+	unsigned int value;
+	int ret, err;
+
+	if (p->qm215) {
+		if (w->shift > 2)
+			return -EINVAL;
+		switch (event) {
+		case SND_SOC_DAPM_POST_PMU:
+			usleep_range(10000, 10100);
+			ret = qm215_read(component, rx_gain_reg[w->shift], &value);
+			if (ret)
+				return ret;
+			return snd_soc_component_write(component, rx_gain_reg[w->shift], value);
+		case SND_SOC_DAPM_POST_PMD:
+			ret = qm215_update(component, LPASS_CDC_CLK_RX_RESET_CTL,
+				BIT(w->shift), BIT(w->shift));
+			err = qm215_update(component, LPASS_CDC_CLK_RX_RESET_CTL,
+				BIT(w->shift), 0);
+			return ret ? ret : err;
+		default:
+			return -EINVAL;
+		}
+	}
+
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		/* apply the digital gain after the interpolator is enabled */
@@ -594,6 +641,144 @@ static int msm8916_wcd_digital_enable_interpolator(
 	return 0;
 }
 
+/* Checked QM215-only events. Keep the legacy event bodies unchanged. */
+static int qm215_update(struct snd_soc_component *component, unsigned int reg,
+		unsigned int mask, unsigned int value)
+{
+	int ret = snd_soc_component_update_bits(component, reg, mask, value);
+
+	return ret < 0 ? ret : 0;
+}
+
+static int qm215_read(struct snd_soc_component *component, unsigned int reg,
+		unsigned int *value)
+{
+	struct msm8916_wcd_digital_priv *p =
+		snd_soc_component_get_drvdata(component);
+
+	return regmap_read(p->regmap, reg, value);
+}
+
+/* Attempt every power-down operation, preserving the first failure. */
+static void qm215_cleanup_update(struct snd_soc_component *component,
+		unsigned int reg, unsigned int mask, unsigned int value, int *error)
+{
+	int ret = qm215_update(component, reg, mask, value);
+
+	if (!*error)
+		*error = ret;
+}
+
+static int qm215_dec_event(struct snd_soc_component *component,
+		unsigned int lane, int event)
+{
+	struct msm8916_wcd_digital_priv *p =
+		snd_soc_component_get_drvdata(component);
+	unsigned int cfg = 0x288 + 32 * lane, mux = 0x28c + 32 * lane;
+	unsigned int value, conn, saved;
+	int ret = 0, err;
+
+	if (lane > 1)
+		return -EINVAL;
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		/* Stock's combined enum writes CONN_TX then mux bit0 (DMIC).
+		 * The reference exposes those as DEC and CIC controls. Reject
+		 * inconsistent selections instead of silently capturing silence.
+		 */
+		ret = qm215_read(component, 0x1a0, &conn);
+		if (ret)
+			return ret;
+		ret = qm215_read(component, mux, &value);
+		if (ret)
+			return ret;
+		conn = (conn >> (3 * lane)) & 7;
+		if (conn > 5 || (!!(value & BIT(0)) != (conn == 4 || conn == 5)))
+			return -EINVAL;
+		saved = (value >> 4) & 3;
+		p->saved_hpf[lane] = saved;
+		ret = qm215_update(component, cfg, BIT(0), BIT(0));
+		if (ret)
+			return ret;
+		ret = qm215_update(component, mux, 0x30, 0x20);
+		if (ret) {
+			err = qm215_update(component, cfg, BIT(0), 0);
+			if (err)
+				dev_err(component->dev, "DEC mute rollback: %d\n", err);
+		}
+		return ret;
+	case SND_SOC_DAPM_POST_PMU:
+		ret = qm215_update(component, mux, BIT(3), 0);
+		if (ret)
+			break;
+		msleep(40);
+		ret = qm215_read(component, tx_gain_reg[lane], &value);
+		if (ret)
+			break;
+		ret = snd_soc_component_write(component, tx_gain_reg[lane], value);
+		if (ret < 0)
+			break;
+		ret = qm215_update(component, cfg, BIT(0), 0);
+		if (!ret)
+			return 0;
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		qm215_cleanup_update(component, cfg, BIT(0), BIT(0), &ret);
+		msleep(20);
+		qm215_cleanup_update(component, mux, BIT(3), BIT(3), &ret);
+		return ret;
+	case SND_SOC_DAPM_POST_PMD:
+		qm215_cleanup_update(component, 0x004, BIT(lane), BIT(lane), &ret);
+		qm215_cleanup_update(component, 0x004, BIT(lane), 0, &ret);
+		qm215_cleanup_update(component, mux, BIT(3), BIT(3), &ret);
+		qm215_cleanup_update(component, mux, 0x30, p->saved_hpf[lane] << 4, &ret);
+		qm215_cleanup_update(component, cfg, BIT(0), 0, &ret);
+		return ret;
+	default:
+		return -EINVAL;
+	}
+	/* Failed power-up: remain muted/bypassed, restore saved HPF. DAPM
+	 * owns the widget gate; this event must not leave delayed work.
+	 */
+	err = 0;
+	qm215_cleanup_update(component, cfg, BIT(0), BIT(0), &err);
+	qm215_cleanup_update(component, mux, BIT(3), BIT(3), &err);
+	qm215_cleanup_update(component, mux, 0x30, p->saved_hpf[lane] << 4, &err);
+	if (err)
+		dev_err(component->dev, "DEC power-up cleanup: %d\n", err);
+	return ret;
+}
+
+static int qm215_dmic_event(struct snd_soc_component *component,
+		unsigned int dmic, int event)
+{
+	unsigned int saved;
+	int ret, err;
+
+	if (dmic < 1 || dmic > 2)
+		return -EINVAL;
+	if (event == SND_SOC_DAPM_POST_PMD)
+		return 0;
+	if (event != SND_SOC_DAPM_PRE_PMU)
+		return -EINVAL;
+	ret = qm215_read(component, LPASS_CDC_CLK_DMIC_B1_CTL, &saved);
+	if (ret)
+		return ret;
+	ret = qm215_update(component, LPASS_CDC_CLK_DMIC_B1_CTL,
+		DMIC_B1_CTL_DMIC0_CLK_SEL_MASK, DMIC_B1_CTL_DMIC0_CLK_SEL_DIV3);
+	if (ret)
+		return ret;
+	ret = qm215_update(component, LPASS_CDC_TX1_DMIC_CTL + 32 * (dmic - 1),
+		TXN_DMIC_CTL_CLK_SEL_MASK, TXN_DMIC_CTL_CLK_SEL_DIV3);
+	if (ret) {
+		err = qm215_update(component, LPASS_CDC_CLK_DMIC_B1_CTL,
+			DMIC_B1_CTL_DMIC0_CLK_SEL_MASK, saved);
+		if (err)
+			dev_err(component->dev, "DMIC selector rollback: %d\n", err);
+	}
+	return ret;
+}
+
 static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
 					  struct snd_kcontrol *kcontrol,
 					  int event)
@@ -602,6 +787,12 @@ static int msm8916_wcd_digital_enable_dec(struct snd_soc_dapm_widget *w,
 	unsigned int decimator = w->shift + 1;
 	u16 dec_reset_reg, tx_vol_ctl_reg, tx_mux_ctl_reg;
 	u8 dec_hpf_cut_of_freq;
+
+	struct msm8916_wcd_digital_priv *p =
+		snd_soc_component_get_drvdata(component);
+
+	if (p->qm215)
+		return qm215_dec_event(component, w->shift, event);
 
 	dec_reset_reg = LPASS_CDC_CLK_TX_RESET_B1_CTL;
 	tx_vol_ctl_reg = LPASS_CDC_TX1_VOL_CTL_CFG + 32 * (decimator - 1);
@@ -676,6 +867,10 @@ static int msm8916_wcd_digital_enable_dmic(struct snd_soc_dapm_widget *w,
 		dev_err(component->dev, "Invalid DMIC line on the component\n");
 		return -EINVAL;
 	}
+
+	if (((struct msm8916_wcd_digital_priv *)
+	     snd_soc_component_get_drvdata(component))->qm215)
+		return qm215_dmic_event(component, dmic, event);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
@@ -1163,6 +1358,260 @@ static const struct regmap_config msm8916_codec_regmap_config = {
 	.cache_type = REGCACHE_FLAT,
 };
 
+/* QM215: stock uses byte MMIO at four-byte register spacing.  Each
+ * access takes a core-clock reference, including idle mixer/DAPM accesses.
+ * DAPM PREPARE takes an additional reference until STANDBY, after
+ * widget power-down events have completed (not PCM shutdown).
+ */
+static int qm215_digital_read(void *context, unsigned int reg, unsigned int *val)
+{
+	struct msm8916_wcd_digital_priv *p = context;
+	int ret = clk_prepare_enable(p->mclk);
+
+	if (ret)
+		return ret;
+	*val = readb(p->base + reg);
+	clk_disable_unprepare(p->mclk);
+	return 0;
+}
+
+static int qm215_digital_write(void *context, unsigned int reg, unsigned int val)
+{
+	struct msm8916_wcd_digital_priv *p = context;
+	int ret = clk_prepare_enable(p->mclk);
+
+	if (ret)
+		return ret;
+	writeb(val, p->base + reg);
+	clk_disable_unprepare(p->mclk);
+	return 0;
+}
+
+/* Limit this qualification variant to the evidenced handset lane.  Stock
+ * hw_params programs 0x00c for capture too; do not substitute 0x010 here.
+ * Validate all parameters before changing registers.
+ */
+static int qm215_digital_hw_params(struct snd_pcm_substream *substream,
+		struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
+{
+	unsigned int rate;
+	int ret;
+
+	if (substream->stream != SNDRV_PCM_STREAM_CAPTURE ||
+	    params_channels(params) != 1 ||
+	    params_format(params) != SNDRV_PCM_FORMAT_S16_LE)
+		return -EINVAL;
+	switch (params_rate(params)) {
+	case 8000: rate = 0; break;
+	case 16000: rate = 1; break;
+	case 32000: rate = 2; break;
+	case 48000: rate = 3; break;
+	default: return -EINVAL;
+	}
+	ret = snd_soc_component_update_bits(dai->component, 0x00c,
+			0x0f | BIT(5), rate | BIT(5));
+	return ret < 0 ? ret : 0;
+}
+
+static int qm215_digital_restore_core(struct snd_soc_component *component)
+{
+	struct msm8916_wcd_digital_priv *p = snd_soc_component_get_drvdata(component);
+	int ret, err;
+
+	ret = qm215_update(component, 0x0a4, BIT(0), p->saved_core_bits[2]);
+	err = qm215_update(component, 0x024, BIT(0), p->saved_core_bits[1]);
+	if (!ret)
+		ret = err;
+	/* Restore feedback last, after DAPM widgets have stopped. */
+	err = qm215_update(component, 0x028, BIT(1), p->saved_core_bits[0]);
+	return ret ? ret : err;
+}
+
+static int qm215_digital_power_up(struct snd_soc_component *component)
+{
+	struct msm8916_wcd_digital_priv *p = snd_soc_component_get_drvdata(component);
+	unsigned int value;
+	int ret, err;
+
+	ret = clk_prepare_enable(p->mclk);
+	if (ret)
+		return ret;
+	ret = qm215_read(component, 0x028, &value);
+	if (ret)
+		goto disable;
+	p->saved_core_bits[0] = value & BIT(1);
+	ret = qm215_read(component, 0x024, &value);
+	if (ret)
+		goto disable;
+	p->saved_core_bits[1] = value & BIT(0);
+	ret = qm215_read(component, 0x0a4, &value);
+	if (ret)
+		goto disable;
+	p->saved_core_bits[2] = value & BIT(0);
+	/* Stock event1/upstream select feedback; DAPM owns bit0. */
+	ret = qm215_update(component, 0x028, BIT(1), BIT(1));
+	if (ret)
+		goto rollback;
+	ret = qm215_update(component, 0x024, BIT(0), BIT(0));
+	if (ret)
+		goto rollback;
+	ret = qm215_update(component, 0x0a4, BIT(0), BIT(0));
+	if (ret)
+		goto rollback;
+	return 0;
+rollback:
+	err = qm215_digital_restore_core(component);
+	if (err)
+		dev_err(component->dev, "core rollback failed: %d\n", err);
+disable:
+	clk_disable_unprepare(p->mclk);
+	return ret;
+}
+
+static int qm215_digital_power_down(struct snd_soc_component *component)
+{
+	struct msm8916_wcd_digital_priv *p = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	ret = qm215_digital_restore_core(component);
+	if (ret)
+		dev_err(component->dev, "core cleanup failed: %d\n", ret);
+	clk_disable_unprepare(p->mclk);
+	return ret;
+}
+
+static int qm215_digital_bias(struct snd_soc_component *component,
+		enum snd_soc_bias_level level)
+{
+	struct msm8916_wcd_digital_priv *p =
+		snd_soc_component_get_drvdata(component);
+	int ret;
+
+	switch (level) {
+	case SND_SOC_BIAS_PREPARE:
+		if (!p->core_active) {
+			ret = qm215_digital_power_up(component);
+			if (ret)
+				return ret;
+			p->core_active = true;
+		}
+		break;
+	case SND_SOC_BIAS_STANDBY:
+	case SND_SOC_BIAS_OFF:
+		if (p->core_active) {
+			ret = qm215_digital_power_down(component);
+			p->core_active = false;
+			if (ret)
+				return ret;
+		}
+		break;
+	case SND_SOC_BIAS_ON:
+		break;
+	}
+	return 0;
+}
+
+static const struct snd_soc_dai_ops qm215_digital_ops = {
+	.hw_params = qm215_digital_hw_params,
+};
+
+static struct snd_soc_dai_driver qm215_digital_dai = {
+	.name = "qm215-wcd-digital-capture",
+	.capture = {
+		.stream_name = "AIF1 Capture",
+		.rates = MSM8916_WCD_DIGITAL_RATES,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+		.channels_min = 1,
+		.channels_max = 1,
+	},
+	.ops = &qm215_digital_ops,
+};
+
+/* Handset-only graph: no TX2/TX3, DEC2, DMIC, RX or sidetone paths. */
+static const char *const qm215_dec_text[] = { "ZERO", "ADC1" };
+static const struct soc_enum qm215_dec_enum =
+	SOC_ENUM_SINGLE(LPASS_CDC_CONN_TX_B1_CTL, 0, 2, qm215_dec_text);
+static const struct snd_kcontrol_new qm215_dec_mux =
+	SOC_DAPM_ENUM("DEC1 MUX Mux", qm215_dec_enum);
+
+static int qm215_handset_event(struct snd_soc_dapm_widget *w,
+		struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	unsigned int conn;
+	int ret;
+
+	(void)kcontrol;
+	if (event == SND_SOC_DAPM_PRE_PMU) {
+		ret = qm215_read(component, LPASS_CDC_CONN_TX_B1_CTL, &conn);
+		if (ret)
+			return ret;
+		if ((conn & 7) != 1)
+			return -EINVAL;
+		/* Stock ADC1 enum put clears DEC1 mux bit0 (AMIC). */
+		ret = qm215_update(component, LPASS_CDC_TX1_MUX_CTL, BIT(0), 0);
+		if (ret)
+			return ret;
+	}
+	return qm215_dec_event(component, 0, event);
+}
+
+static const struct snd_soc_dapm_widget qm215_handset_widgets[] = {
+	SND_SOC_DAPM_INPUT("LPASS_PDM_TX"),
+	SND_SOC_DAPM_MIXER("ADC1", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_MUX_E("DEC1 MUX", LPASS_CDC_CLK_TX_CLK_EN_B1_CTL, 0, 0,
+		&qm215_dec_mux, qm215_handset_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_AIF_OUT("I2S TX1", NULL, 0, SND_SOC_NOPM, 0, 0),
+	SND_SOC_DAPM_SUPPLY("TX_I2S_CLK", LPASS_CDC_CLK_TX_I2S_CTL, 4, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY("MCLK", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY("PDM_CLK", LPASS_CDC_CLK_PDM_CTL, 0, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY_S("CDC_CONN", -2, LPASS_CDC_CLK_OTHR_CTL, 2, 0, NULL, 0),
+};
+
+static const struct snd_soc_dapm_route qm215_handset_routes[] = {
+	{ "AIF1 Capture", NULL, "I2S TX1" },
+	{ "I2S TX1", NULL, "DEC1 MUX" },
+	{ "I2S TX1", NULL, "TX_I2S_CLK" },
+	{ "DEC1 MUX", "ADC1", "ADC1" },
+	{ "DEC1 MUX", NULL, "CDC_CONN" },
+	{ "ADC1", NULL, "LPASS_PDM_TX" },
+	{ "TX_I2S_CLK", NULL, "MCLK" },
+	{ "TX_I2S_CLK", NULL, "PDM_CLK" },
+};
+
+static const struct snd_kcontrol_new qm215_handset_controls[] = {
+	SOC_SINGLE_S8_TLV("TX1 Digital Volume", LPASS_CDC_TX1_VOL_CTL_GAIN,
+		-84, 40, digital_gain),
+};
+
+static const struct snd_soc_component_driver qm215_digital_component = {
+	.controls = qm215_handset_controls,
+	.num_controls = ARRAY_SIZE(qm215_handset_controls),
+	.set_bias_level = qm215_digital_bias,
+	.probe = msm8916_wcd_digital_component_probe,
+	.dapm_widgets = qm215_handset_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(qm215_handset_widgets),
+	.dapm_routes = qm215_handset_routes,
+	.num_dapm_routes = ARRAY_SIZE(qm215_handset_routes),
+	/* No idle bias, delayed playback power-down, or probe-time clock hold. */
+	.endianness = 1,
+};
+
+static const struct regmap_config qm215_digital_regmap = {
+	.reg_bits = 32,
+	.reg_stride = 4,
+	.val_bits = 8,
+	/* Existing shared controls stop at 0x2b4; do not expose the stock
+	 * off-by-one max_register=0x2f4 outside its 0x2f4-byte mapping.
+	 */
+	.max_register = LPASS_CDC_TX2_DMIC_CTL,
+	.reg_read = qm215_digital_read,
+	.reg_write = qm215_digital_write,
+	.cache_type = REGCACHE_NONE,
+};
+
 static int msm8916_wcd_digital_probe(struct platform_device *pdev)
 {
 	struct msm8916_wcd_digital_priv *priv;
@@ -1178,6 +1627,28 @@ static int msm8916_wcd_digital_probe(struct platform_device *pdev)
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
+
+	if (of_device_is_compatible(dev->of_node, "qcom,qm215-wcd-digital-codec")) {
+		struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
+		if (!res || resource_size(res) < LPASS_CDC_TX2_DMIC_CTL + 1)
+			return dev_err_probe(dev, -EINVAL, "digital resource too small\n");
+		priv->qm215 = true;
+		priv->base = base;
+		priv->mclk = devm_clk_get(dev, "core");
+		if (IS_ERR(priv->mclk))
+			return dev_err_probe(dev, PTR_ERR(priv->mclk), "core clock\n");
+		ret = clk_set_rate(priv->mclk, 9600000);
+		if (ret)
+			return ret;
+		digital_map = devm_regmap_init(dev, NULL, priv, &qm215_digital_regmap);
+		if (IS_ERR(digital_map))
+			return PTR_ERR(digital_map);
+		priv->regmap = digital_map;
+		dev_set_drvdata(dev, priv);
+		return devm_snd_soc_register_component(dev, &qm215_digital_component,
+				&qm215_digital_dai, 1);
+	}
 
 	digital_map =
 	    devm_regmap_init_mmio(&pdev->dev, base,
@@ -1222,12 +1693,15 @@ static void msm8916_wcd_digital_remove(struct platform_device *pdev)
 {
 	struct msm8916_wcd_digital_priv *priv = dev_get_drvdata(&pdev->dev);
 
-	clk_disable_unprepare(priv->mclk);
-	clk_disable_unprepare(priv->ahbclk);
+	if (!priv->qm215) {
+		clk_disable_unprepare(priv->mclk);
+		clk_disable_unprepare(priv->ahbclk);
+	}
 }
 
 static const struct of_device_id msm8916_wcd_digital_match_table[] = {
 	{ .compatible = "qcom,msm8916-wcd-digital-codec" },
+	{ .compatible = "qcom,qm215-wcd-digital-codec" },
 	{ }
 };
 

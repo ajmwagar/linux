@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
+#include <linux/workqueue.h>
 
 #include <dt-bindings/clock/qcom,gcc-msm8917.h>
 
@@ -4131,11 +4132,32 @@ static void sdm439_clock_override(void)
 	usb_hs_system_clk_src.freq_tbl = ftbl_usb_hs_system_clk_src_msm8937;
 }
 
+static unsigned int cat_gcc_attempts;
+static int cat_gcc_result = -EINPROGRESS;
+static const char *cat_gcc_phase = "probe not entered";
+
+static void cat_gcc_report(struct work_struct *work)
+{
+	pr_info("CAT GCC STATUS: attempts=%u phase=%s result=%d\n",
+		cat_gcc_attempts, cat_gcc_phase, cat_gcc_result);
+}
+static DECLARE_DELAYED_WORK(cat_gcc_report_work, cat_gcc_report);
+static int __init cat_gcc_report_init(void)
+{
+	schedule_delayed_work(&cat_gcc_report_work, 15 * HZ);
+	return 0;
+}
+late_initcall(cat_gcc_report_init);
+
 static int gcc_msm8917_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
 	const struct qcom_cc_desc *gcc_desc;
+	int ret;
 
+	cat_gcc_attempts++;
+	cat_gcc_phase = "probe entered";
+	dev_info(&pdev->dev, "CAT GCC: probe entered\n");
 	gcc_desc = of_device_get_match_data(&pdev->dev);
 
 	if (gcc_desc == &gcc_qm215_desc) {
@@ -4150,13 +4172,29 @@ static int gcc_msm8917_probe(struct platform_device *pdev)
 		sdm439_clock_override();
 	}
 
+	cat_gcc_phase = "mapping";
 	regmap = qcom_cc_map(pdev, gcc_desc);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	if (IS_ERR(regmap)) {
+		cat_gcc_result = PTR_ERR(regmap);
+		return dev_err_probe(&pdev->dev, PTR_ERR(regmap),
+				     "CAT GCC: register mapping failed\n");
+	}
 
+	dev_info(&pdev->dev, "CAT GCC: mapping ready, configuring PLL\n");
+	cat_gcc_phase = "PLL configure";
 	clk_alpha_pll_configure(&gpll3_early, regmap, &gpll3_early_config);
 
-	return qcom_cc_really_probe(&pdev->dev, gcc_desc, regmap);
+	dev_info(&pdev->dev, "CAT GCC: registering clocks/resets/domains\n");
+	cat_gcc_phase = "provider registration";
+	ret = qcom_cc_really_probe(&pdev->dev, gcc_desc, regmap);
+	cat_gcc_result = ret;
+	if (!ret)
+		cat_gcc_phase = "ready";
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "CAT GCC: provider registration failed\n");
+	dev_info(&pdev->dev, "CAT GCC: provider registration complete\n");
+	return 0;
 }
 
 static const struct of_device_id gcc_msm8917_match_table[] = {

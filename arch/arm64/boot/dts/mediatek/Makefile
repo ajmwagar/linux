@@ -188,3 +188,6 @@ DTC_FLAGS_mt7988a-bananapi-bpi-r4-2g5 := -@
 DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-4e := -@
 DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-8x := -@
 DTC_FLAGS_mt8395-radxa-nio-12l := -@
+# TCL 4058G (mt6739) - local bring-up, not upstream
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6739-tcl-4058g.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6739-tcl-4058g-pager.dtb

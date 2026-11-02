@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* CAT S22 DPCM topology qualification. Codec startup denies playback. */
+#include <linux/module.h>
+#include <linux/io.h>
+#include <linux/mux/consumer.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/platform_device.h>
+#include <linux/string.h>
+#include <sound/pcm_params.h>
+#include <sound/soc.h>
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include "qdsp6/q6afe.h"
+#include "common.h"
+
+struct cat_transport {
+	struct mux_control *mux;
+	struct pinctrl *pins;
+	struct pinctrl_state *active, *sleep;
+	bool running;
+	void __iomem *mic_mux, *speaker_mux;
+	u32 mic_saved, speaker_saved;
+	bool capture_running;
+};
+
+static int cat_transport_startup(struct snd_pcm_substream *s)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(s);
+	struct cat_transport *t = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dai *cpu = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret, cleanup;
+
+	/* One fixed playback backend; do not silently share ownership. */
+	if (s->stream != SNDRV_PCM_STREAM_PLAYBACK || cpu->id != QUINARY_MI2S_RX)
+		return -EINVAL;
+	if (t->running)
+		return -EBUSY;
+	ret = mux_control_try_select(t->mux, 1);
+	if (ret)
+		return ret;
+	ret = snd_soc_dai_set_fmt(cpu, SND_SOC_DAIFMT_BP_FP | SND_SOC_DAIFMT_I2S);
+	if (ret)
+		goto mux;
+	/* CAT stock derives BCLK = 48000 * 16 * 2 for this port. */
+	ret = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT,
+				    48000 * 16 * 2, SNDRV_PCM_STREAM_PLAYBACK);
+	if (ret)
+		goto clock;
+	ret = pinctrl_select_state(t->pins, t->active);
+	if (ret)
+		goto clock;
+	t->running = true;
+	dev_info(rtd->card->dev, "QUINARY transport test: clocks active; amplifier reset held\n");
+	return 0;
+clock:
+	cleanup = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT,
+				       0, SNDRV_PCM_STREAM_PLAYBACK);
+	if (cleanup)
+		dev_err(rtd->card->dev, "clock rollback failed: %d\n", cleanup);
+	cleanup = pinctrl_select_state(t->pins, t->sleep);
+	if (cleanup)
+		dev_err(rtd->card->dev, "pin rollback failed: %d\n", cleanup);
+mux:
+	cleanup = mux_control_deselect(t->mux);
+	if (cleanup)
+		dev_err(rtd->card->dev, "mux release failed: %d\n", cleanup);
+	return ret;
+}
+
+static void cat_transport_shutdown(struct snd_pcm_substream *s)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(s);
+	struct cat_transport *t = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dai *cpu = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret;
+
+	if (!t->running)
+		return;
+	ret = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT,
+				    0, SNDRV_PCM_STREAM_PLAYBACK);
+	if (ret)
+		dev_err(rtd->card->dev, "clock shutdown failed: %d\n", ret);
+	ret = pinctrl_select_state(t->pins, t->sleep);
+	if (ret)
+		dev_err(rtd->card->dev, "pin sleep failed: %d\n", ret);
+	ret = mux_control_deselect(t->mux);
+	if (ret)
+		dev_err(rtd->card->dev, "mux release failed: %d\n", ret);
+	t->running = false;
+	dev_info(rtd->card->dev, "QUINARY transport test stopped; amplifier reset held\n");
+}
+
+static int cat_transport_fixup(struct snd_soc_pcm_runtime *rtd,
+			       struct snd_pcm_hw_params *params)
+{
+	struct snd_interval *rate = hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
+	struct snd_interval *channels = hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
+	struct snd_mask *format = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+
+	rate->min = rate->max = 48000;
+	channels->min = channels->max = 2;
+	snd_mask_none(format);
+	snd_mask_set_format(format, SNDRV_PCM_FORMAT_S16_LE);
+	return 0;
+}
+
+static const struct snd_soc_ops cat_transport_ops = {
+	.startup = cat_transport_startup,
+	.shutdown = cat_transport_shutdown,
+};
+
+/* Fitted stock TERT startup selects MIC bit21 and speaker bit16.
+ * Restore only owned bits, preserving unrelated mux fields on every exit.
+ * Resources are exclusively requested at probe, never selected at probe.
+ */
+static void cat_capture_restore_mux(struct cat_transport *t)
+{
+	u32 val;
+
+	val = readl(t->mic_mux);
+	writel((val & ~BIT(21)) | t->mic_saved, t->mic_mux);
+	val = readl(t->speaker_mux);
+	writel((val & ~BIT(16)) | t->speaker_saved, t->speaker_mux);
+}
+
+static int cat_capture_startup(struct snd_pcm_substream *s)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(s);
+	struct cat_transport *t = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dai *cpu = snd_soc_rtd_to_cpu(rtd, 0);
+	u32 val;
+	int ret, cleanup;
+
+	if (s->stream != SNDRV_PCM_STREAM_CAPTURE || cpu->id != TERTIARY_MI2S_TX)
+		return -EINVAL;
+	if (t->capture_running)
+		return -EBUSY;
+	if (!snd_soc_dapm_get_pin_status(snd_soc_card_to_dapm(rtd->card),
+					"Handset Mic"))
+		return -EACCES;
+	val = readl(t->speaker_mux);
+	t->speaker_saved = val & BIT(16);
+	writel(val | BIT(16), t->speaker_mux);
+	val = readl(t->mic_mux);
+	t->mic_saved = val & BIT(21);
+	writel(val | BIT(21), t->mic_mux);
+	ret = snd_soc_dai_set_fmt(cpu, SND_SOC_DAIFMT_BP_FP | SND_SOC_DAIFMT_I2S);
+	if (ret)
+		goto restore;
+	/* Exact stock clock request: TERT port0x1005, ID0x104, 1536000Hz. */
+	ret = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
+				    1536000, SNDRV_PCM_STREAM_CAPTURE);
+	if (ret) {
+		cleanup = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
+					       0, SNDRV_PCM_STREAM_CAPTURE);
+		if (cleanup)
+			dev_err(rtd->card->dev, "TERT clock rollback failed: %d\n", cleanup);
+		goto restore;
+	}
+	t->capture_running = true;
+	return 0;
+restore:
+	cat_capture_restore_mux(t);
+	return ret;
+}
+
+static void cat_capture_shutdown(struct snd_pcm_substream *s)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(s);
+	struct cat_transport *t = snd_soc_card_get_drvdata(rtd->card);
+	struct snd_soc_dai *cpu = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret;
+
+	if (!t->capture_running)
+		return;
+	ret = snd_soc_dai_set_sysclk(cpu, Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
+				    0, SNDRV_PCM_STREAM_CAPTURE);
+	if (ret)
+		dev_err(rtd->card->dev, "TERT clock shutdown failed: %d\n", ret);
+	cat_capture_restore_mux(t);
+	t->capture_running = false;
+}
+
+static int cat_capture_fixup(struct snd_soc_pcm_runtime *rtd,
+			     struct snd_pcm_hw_params *params)
+{
+	struct snd_interval *rate = hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
+	struct snd_interval *channels = hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
+	struct snd_mask *format = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+
+	rate->min = rate->max = 48000;
+	channels->min = channels->max = 1;
+	snd_mask_none(format);
+	snd_mask_set_format(format, SNDRV_PCM_FORMAT_S16_LE);
+	return 0;
+}
+
+static const struct snd_soc_ops cat_capture_ops = {
+	.startup = cat_capture_startup,
+	.shutdown = cat_capture_shutdown,
+};
+
+static int cat_capture_late_probe(struct snd_soc_card *card)
+{
+	static const char * const disabled[] = {
+		"Handset Mic", "AMIC2", "AMIC3", "EAR", "HPH_L", "HPH_R", "SPK_OUT",
+	};
+	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
+	int i, ret;
+
+	/* A connected ALSA input pin must not silently select another capsule.
+	 * Explicit userspace Handset Mic switch is required in addition to PCM.
+	 */
+	for (i = 0; i < ARRAY_SIZE(disabled); i++) {
+		ret = snd_soc_dapm_disable_pin(dapm, disabled[i]);
+		if (ret)
+			return ret;
+	}
+	return snd_soc_dapm_sync(dapm);
+}
+
+static int cat_card_probe(struct platform_device *pdev)
+{
+	struct snd_soc_card *card;
+	struct cat_transport *t;
+	int ret, i, j;
+
+	card = devm_kzalloc(&pdev->dev, sizeof(*card), GFP_KERNEL);
+	if (!card)
+		return -ENOMEM;
+	card->driver_name = "cat-s22";
+	card->dev = &pdev->dev;
+	card->owner = THIS_MODULE;
+	ret = qcom_snd_parse_of(card);
+	if (ret)
+		return ret;
+	/* Overlay merge can reverse child order. Routing owns cross-component
+	 * routes to ASM widgets: frontend components must be probed first.
+	 * Keep frontend links before backend routing links independent of DT order.
+	 */
+	for (i = 1; i < card->num_links; i++) {
+		struct snd_soc_dai_link link = card->dai_link[i];
+
+		for (j = i; j > 0 && link.dynamic && !card->dai_link[j - 1].dynamic; j--)
+			card->dai_link[j] = card->dai_link[j - 1];
+		card->dai_link[j] = link;
+	}
+	t = devm_kzalloc(&pdev->dev, sizeof(*t), GFP_KERNEL);
+	if (!t)
+		return -ENOMEM;
+	snd_soc_card_set_drvdata(card, t);
+	if (of_property_read_bool(pdev->dev.of_node, "cat,handset-capture-test")) {
+		card->late_probe = cat_capture_late_probe;
+		t->mic_mux = devm_platform_ioremap_resource_byname(pdev, "mic-mux");
+		if (IS_ERR(t->mic_mux))
+			return PTR_ERR(t->mic_mux);
+		t->speaker_mux = devm_platform_ioremap_resource_byname(pdev, "speaker-mux");
+		if (IS_ERR(t->speaker_mux))
+			return PTR_ERR(t->speaker_mux);
+		for (i = 0; i < card->num_links; i++) {
+			if (!card->dai_link[i].no_pcm || !card->dai_link[i].name ||
+			    strcmp(card->dai_link[i].name, "TERT_MI2S_TX"))
+				continue;
+			card->dai_link[i].ops = &cat_capture_ops;
+			card->dai_link[i].be_hw_params_fixup = cat_capture_fixup;
+		}
+	}
+	if (of_property_read_bool(pdev->dev.of_node, "cat,reset-held-transport-test")) {
+		t->mux = devm_mux_control_get(&pdev->dev, "quinary");
+		if (IS_ERR(t->mux))
+			return dev_err_probe(&pdev->dev, PTR_ERR(t->mux), "QUINARY mux\n");
+		t->pins = devm_pinctrl_get(&pdev->dev);
+		if (IS_ERR(t->pins))
+			return dev_err_probe(&pdev->dev, PTR_ERR(t->pins), "QUINARY pins\n");
+		t->active = pinctrl_lookup_state(t->pins, "quinary-active");
+		if (IS_ERR(t->active))
+			return PTR_ERR(t->active);
+		t->sleep = pinctrl_lookup_state(t->pins, "quinary-sleep");
+		if (IS_ERR(t->sleep))
+			return PTR_ERR(t->sleep);
+		/* No pin or mux selection at probe. The codec still holds reset. */
+		snd_soc_card_set_drvdata(card, t);
+		for (i = 0; i < card->num_links; i++) {
+			/* Speaker-only ops must never configure a capture backend. */
+			if (!card->dai_link[i].no_pcm ||
+			    !card->dai_link[i].name ||
+			    strcmp(card->dai_link[i].name, "QUINARY_MI2S_RX"))
+				continue;
+			card->dai_link[i].ops = &cat_transport_ops;
+			card->dai_link[i].be_hw_params_fixup = cat_transport_fixup;
+		}
+	}
+	return devm_snd_soc_register_card(&pdev->dev, card);
+}
+static const struct of_device_id cat_card_of_match[] = {
+	{ .compatible = "cat,s22-audio" }, {}
+};
+MODULE_DEVICE_TABLE(of, cat_card_of_match);
+static struct platform_driver cat_card_driver = {
+	.probe = cat_card_probe,
+	.driver = { .name = "cat-s22-audio", .of_match_table = cat_card_of_match },
+};
+module_platform_driver(cat_card_driver);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("CAT S22 audio topology qualification");

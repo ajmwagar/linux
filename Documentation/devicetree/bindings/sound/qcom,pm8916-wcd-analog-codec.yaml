@@ -57,6 +57,13 @@ properties:
   vdd-micbias-supply:
     description: micbias supply
 
+  cat,handset-capture-only:
+    type: boolean
+    description: |
+      Opt-in CAT handset qualification policy. Disable headset insertion and
+      button sensing, do not retain idle bias or delayed playback power-down.
+      The machine must separately isolate unused pins and bound recording.
+
   qcom,mbhc-vthreshold-low:
     $ref: /schemas/types.yaml#/definitions/uint32-array
     description:

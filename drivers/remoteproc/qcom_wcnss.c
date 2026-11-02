@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/iopoll.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
@@ -178,9 +179,10 @@ static void wcnss_indicate_nv_download(struct qcom_wcnss *wcnss)
 	writel(val, wcnss->spare_out);
 }
 
-static void wcnss_configure_iris(struct qcom_wcnss *wcnss)
+static int wcnss_configure_iris(struct qcom_wcnss *wcnss)
 {
-	u32 val;
+	u32 val, status;
+	int ret;
 
 	/* Clear PMU cfg register */
 	writel(0, wcnss->pmu_cfg);
@@ -201,8 +203,10 @@ static void wcnss_configure_iris(struct qcom_wcnss *wcnss)
 	writel(val, wcnss->pmu_cfg);
 
 	/* Wait for PMU.iris_reg_reset_sts */
-	while (readl(wcnss->pmu_cfg) & WCNSS_PMU_IRIS_RESET_STS)
-		cpu_relax();
+	ret = readl_poll_timeout(wcnss->pmu_cfg, status,
+				 !(status & WCNSS_PMU_IRIS_RESET_STS), 10, 100000);
+	if (ret)
+		goto timeout;
 
 	/* Clear IRIS reset */
 	val &= ~WCNSS_PMU_IRIS_RESET;
@@ -213,8 +217,10 @@ static void wcnss_configure_iris(struct qcom_wcnss *wcnss)
 	writel(val, wcnss->pmu_cfg);
 
 	/* Wait for XO configuration to finish */
-	while (readl(wcnss->pmu_cfg) & WCNSS_PMU_IRIS_XO_CFG_STS)
-		cpu_relax();
+	ret = readl_poll_timeout(wcnss->pmu_cfg, status,
+				 !(status & WCNSS_PMU_IRIS_XO_CFG_STS), 10, 100000);
+	if (ret)
+		goto timeout;
 
 	/* Stop IRIS XO configuration */
 	val &= ~WCNSS_PMU_GC_BUS_MUX_SEL_TOP;
@@ -223,6 +229,11 @@ static void wcnss_configure_iris(struct qcom_wcnss *wcnss)
 
 	/* Add some delay for XO to settle */
 	msleep(20);
+	return 0;
+timeout:
+	dev_err(wcnss->dev, "IRIS configuration timed out: %#x\n", status);
+	writel(0, wcnss->pmu_cfg);
+	return ret;
 }
 
 static int wcnss_start(struct rproc *rproc)
@@ -255,7 +266,9 @@ static int wcnss_start(struct rproc *rproc)
 		goto disable_regulators;
 
 	wcnss_indicate_nv_download(wcnss);
-	wcnss_configure_iris(wcnss);
+	ret = wcnss_configure_iris(wcnss);
+	if (ret)
+		goto disable_iris;
 
 	ret = qcom_pas_auth_and_reset(WCNSS_PAS_ID);
 	if (ret) {
@@ -662,6 +675,8 @@ static int wcnss_probe(struct platform_device *pdev)
 		goto detach_pds;
 	}
 
+	/* CAT qualification: stage own firmware/NV in RAM, then start manually. */
+	rproc->auto_boot = false;
 	ret = rproc_add(rproc);
 	if (ret)
 		goto remove_iris;

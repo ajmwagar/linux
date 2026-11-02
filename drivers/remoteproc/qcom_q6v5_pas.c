@@ -1096,6 +1096,18 @@ static const struct qcom_pas_data sm8350_adsp_resource = {
 	.ssctl_id = 0x14,
 };
 
+/* MSM8937: qualify firmware startup explicitly; never auto-start on probe. */
+static const struct qcom_pas_data msm8937_adsp_resource = {
+	.crash_reason_smem = 423,
+	.firmware_name = "adsp.mdt",
+	.pas_id = 1,
+	.auto_boot = false,
+	.proxy_pd_names = (char*[]){ "cx", NULL },
+	.ssr_name = "lpass",
+	.sysmon_name = "adsp",
+	.ssctl_id = 0x14,
+};
+
 static const struct qcom_pas_data msm8996_adsp_resource = {
 	.crash_reason_smem = 423,
 	.firmware_name = "adsp.mdt",
@@ -1833,6 +1845,7 @@ static const struct of_device_id qcom_pas_of_match[] = {
 	{ .compatible = "qcom,milos-mpss-pas", .data = &sm8450_mpss_resource },
 	{ .compatible = "qcom,milos-wpss-pas", .data = &sc7280_wpss_resource },
 	{ .compatible = "qcom,msm8226-adsp-pil", .data = &msm8996_adsp_resource },
+	{ .compatible = "qcom,msm8937-adsp-pil", .data = &msm8937_adsp_resource },
 	{ .compatible = "qcom,msm8953-adsp-pil", .data = &msm8996_adsp_resource },
 	{ .compatible = "qcom,msm8974-adsp-pil", .data = &msm8996_adsp_resource },
 	{ .compatible = "qcom,msm8996-adsp-pil", .data = &msm8996_adsp_resource },

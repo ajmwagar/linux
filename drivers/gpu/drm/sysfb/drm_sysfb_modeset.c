@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/export.h>
+#include <linux/iosys-map.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 
 #include <drm/drm_atomic.h>
@@ -326,6 +328,69 @@ int drm_sysfb_plane_helper_atomic_check(struct drm_plane *plane,
 }
 EXPORT_SYMBOL(drm_sysfb_plane_helper_atomic_check);
 
+/* Diagnostic only: no second mapping, export, MMIO addresses or writes.
+ * Limit output/work to eight eligible updates. Default OFF: parent enables
+ * only after USB/recovery access and the static native presenter are ready.
+ */
+static bool cat_readback;
+module_param(cat_readback, bool, 0600);
+MODULE_PARM_DESC(cat_readback, "Bounded RGB888 post-blit readback diagnostic");
+
+static void cat_sysfb_compare(struct drm_device *dev,
+		struct drm_sysfb_device *sysfb, struct drm_plane_state *ps,
+		struct drm_shadow_plane_state *shadow, struct drm_framebuffer *fb,
+		const struct drm_format_info *dst_format)
+{
+	static atomic_t remaining = ATOMIC_INIT(8);
+	u8 actual[192], expected[192];
+	u32 source_hash = 2166136261U, scanout_hash = 2166136261U;
+	unsigned int y, x, i, row_bytes;
+
+	if (!READ_ONCE(cat_readback))
+		return;
+	/* Only native, unscaled, origin-aligned full 480x640 RGB888.
+	 * shadow->data already includes each framebuffer plane offset.
+	 * Never compare converted data against raw XRGB or unrelated devices.
+	 */
+	if (fb->format->format != DRM_FORMAT_RGB888 ||
+	    dst_format->format != DRM_FORMAT_RGB888 ||
+	    fb->width != 480 || fb->height != 640 ||
+	    sysfb->fb_mode.hdisplay != 480 || sysfb->fb_mode.vdisplay != 640 ||
+	    ps->src_x || ps->src_y || ps->src_w != (480U << 16) ||
+	    ps->src_h != (640U << 16) || ps->dst.x1 || ps->dst.y1 ||
+	    ps->dst.x2 != 480 || ps->dst.y2 != 640 ||
+	    fb->pitches[0] < 1440 || sysfb->fb_pitch < 1440 ||
+	    iosys_map_is_null(&shadow->data[0]) || iosys_map_is_null(&sysfb->fb_addr))
+		return;
+	if (atomic_dec_if_positive(&remaining) < 0)
+		return;
+	row_bytes = 1440;
+	/* Complete prior WC writes before reading through the SAME owned map. */
+	mb();
+	for (y = 0; y < 640; y++) {
+		for (x = 0; x < row_bytes; x += sizeof(actual)) {
+			unsigned int n = min_t(unsigned int, sizeof(actual), row_bytes - x);
+
+			/* shadow->data is already advanced by fb->offsets[0]. */
+			iosys_map_memcpy_from(expected, &shadow->data[0],
+				y * fb->pitches[0] + x, n);
+			iosys_map_memcpy_from(actual, &sysfb->fb_addr,
+				y * sysfb->fb_pitch + x, n);
+			for (i = 0; i < n; i++) {
+				source_hash = (source_hash ^ expected[i]) * 16777619U;
+				scanout_hash = (scanout_hash ^ actual[i]) * 16777619U;
+				if (actual[i] != expected[i]) {
+					drm_err(dev, "CAT readback MISMATCH row=%u byte=%u src=%02x dst=%02x src_pitch=%u dst_pitch=%u\n",
+						y, x + i, expected[i], actual[i], fb->pitches[0], sysfb->fb_pitch);
+					return;
+				}
+			}
+		}
+	}
+	drm_info(dev, "CAT readback MATCH native RGB888 480x640 src_pitch=%u dst_pitch=%u fnv1a_src=%08x fnv1a_dst=%08x (memory only, not panel proof)\n",
+		fb->pitches[0], sysfb->fb_pitch, source_hash, scanout_hash);
+}
+
 void drm_sysfb_plane_helper_atomic_update(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct drm_device *dev = plane->dev;
@@ -364,6 +429,7 @@ void drm_sysfb_plane_helper_atomic_update(struct drm_plane *plane, struct drm_at
 			     &shadow_plane_state->fmtcnv_state);
 	}
 
+	cat_sysfb_compare(dev, sysfb, plane_state, shadow_plane_state, fb, dst_format);
 	drm_dev_exit(idx);
 out_drm_gem_fb_end_cpu_access:
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);

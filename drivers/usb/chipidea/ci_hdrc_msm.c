@@ -13,6 +13,7 @@
 #include <linux/reset-controller.h>
 #include <linux/extcon.h>
 #include <linux/of.h>
+#include <linux/workqueue.h>
 
 #include "ci.h"
 
@@ -82,6 +83,8 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 	struct ci_hdrc_msm *msm_ci = dev_get_drvdata(dev);
 	int ret;
 
+	dev_info(dev, "CAT USB: event=%u vbus=%d connected=%d speed=%u\n",
+		 event, ci->vbus_active, ci->gadget.connected, ci->gadget.speed);
 	switch (event) {
 	case CI_HDRC_CONTROLLER_RESET_EVENT:
 		dev_dbg(dev, "CI_HDRC_CONTROLLER_RESET_EVENT received\n");
@@ -94,14 +97,18 @@ static int ci_hdrc_msm_notify_event(struct ci_hdrc *ci, unsigned event)
 		}
 
 		ret = phy_init(ci->phy);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "CAT USB: phy_init failed %d\n", ret);
 			return ret;
+		}
 
 		ret = phy_power_on(ci->phy);
 		if (ret) {
+			dev_err(dev, "CAT USB: phy_power_on failed %d\n", ret);
 			phy_exit(ci->phy);
 			return ret;
 		}
+		dev_info(dev, "CAT USB: PHY initialized and powered\n");
 
 		/* use AHB transactor, allow posted data writes */
 		hw_write_id_reg(ci, HS_PHY_AHB_MODE, 0xffffffff, 0x8);

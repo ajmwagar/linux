@@ -240,6 +240,9 @@ struct panel_mipi_dbi_device {
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
 	struct drm_connector connector;
+	/* Only CAT's lifecycle bypasses the generic reset/power helpers. */
+	bool cat_s22;
+	bool cat_powered;
 };
 
 static struct panel_mipi_dbi_device *to_panel_mipi_dbi_device(struct drm_device *dev)
@@ -260,6 +263,115 @@ static const struct drm_plane_funcs panel_mipi_dbi_plane_funcs = {
 	.destroy = drm_plane_cleanup,
 };
 
+static void panel_mipi_dbi_cat_poweroff(struct panel_mipi_dbi_device *panel)
+{
+	struct mipi_dbi_dev *dbidev = &panel->dbidev;
+	int ret;
+
+	if (!panel->cat_powered)
+		return;
+	ret = regulator_disable(dbidev->io_regulator);
+	if (ret)
+		drm_err(&dbidev->drm, "CAT I/O power-off failed: %d\n", ret);
+	ret = regulator_disable(dbidev->regulator);
+	if (ret)
+		drm_err(&dbidev->drm, "CAT power-off failed: %d\n", ret);
+	panel->cat_powered = false;
+}
+
+static int panel_mipi_dbi_cat_poweron(struct panel_mipi_dbi_device *panel)
+{
+	struct mipi_dbi_dev *dbidev = &panel->dbidev;
+	int ret;
+
+	ret = regulator_enable(dbidev->regulator);
+	if (ret)
+		return ret;
+	ret = regulator_enable(dbidev->io_regulator);
+	if (ret) {
+		int err = regulator_disable(dbidev->regulator);
+
+		if (err)
+			drm_err(&dbidev->drm, "CAT power rollback failed: %d\n", err);
+		return ret;
+	}
+	panel->cat_powered = true;
+	/* Active-low descriptor: logical 0 = physical high. Stock H10/L20/H120. */
+	gpiod_set_value_cansleep(dbidev->dbi.reset, 0);
+	usleep_range(10000, 11000);
+	gpiod_set_value_cansleep(dbidev->dbi.reset, 1);
+	msleep(20);
+	gpiod_set_value_cansleep(dbidev->dbi.reset, 0);
+	msleep(120);
+	/* Firmware owns the sole software reset and its 50ms wait. */
+	return 0;
+}
+
+static int panel_mipi_dbi_cat_commands(struct mipi_dbi_dev *dbidev)
+{
+	struct panel_mipi_dbi_commands *commands = dbidev->driver_private;
+	struct mipi_dbi *dbi = &dbidev->dbi;
+	unsigned int i = 0;
+	int ret;
+
+	if (!commands)
+		return -EINVAL;
+
+	while (i < commands->len) {
+		u8 command = commands->buf[i++];
+		u8 count = commands->buf[i++];
+		const u8 *parameters = &commands->buf[i];
+
+		if (!command && count == 1) {
+			msleep(parameters[0]);
+		} else {
+			ret = mipi_dbi_command_stackbuf(dbi, command, parameters, count);
+			if (ret)
+				return ret;
+		}
+		i += count;
+	}
+	return 0;
+}
+
+static void panel_mipi_dbi_cat_off(struct panel_mipi_dbi_device *panel)
+{
+	struct mipi_dbi_dev *dbidev = &panel->dbidev;
+	int ret;
+
+	ret = backlight_disable(dbidev->backlight);
+	if (ret)
+		drm_err(&dbidev->drm, "CAT backlight disable failed: %d\n", ret);
+	if (!panel->cat_powered)
+		return;
+	ret = mipi_dbi_command(&dbidev->dbi, MIPI_DCS_SET_DISPLAY_OFF);
+	if (ret)
+		drm_err(&dbidev->drm, "CAT display-off failed: %d\n", ret);
+	msleep(32);
+	ret = mipi_dbi_command(&dbidev->dbi, MIPI_DCS_ENTER_SLEEP_MODE);
+	if (ret)
+		drm_err(&dbidev->drm, "CAT sleep-in failed: %d\n", ret);
+	msleep(32);
+	panel_mipi_dbi_cat_poweroff(panel);
+	drm_info(&dbidev->drm, "CAT outer off sequence completed (errors logged above)\n");
+}
+
+static void panel_mipi_dbi_crtc_helper_atomic_disable(struct drm_crtc *crtc,
+						   struct drm_atomic_commit *state)
+{
+	struct panel_mipi_dbi_device *panel = to_panel_mipi_dbi_device(crtc->dev);
+	int idx;
+
+	if (!panel->cat_s22) {
+		drm_mipi_dbi_crtc_helper_atomic_disable(crtc, state);
+		return;
+	}
+	if (!drm_dev_enter(crtc->dev, &idx))
+		return;
+	panel_mipi_dbi_cat_off(panel);
+	drm_dev_exit(idx);
+}
+
 static void panel_mipi_dbi_crtc_helper_atomic_enable(struct drm_crtc *crtc,
 						     struct drm_atomic_commit *state)
 {
@@ -274,6 +386,20 @@ static void panel_mipi_dbi_crtc_helper_atomic_enable(struct drm_crtc *crtc,
 
 	drm_dbg(drm, "\n");
 
+	if (panel_mipi_dbi->cat_s22) {
+		ret = panel_mipi_dbi_cat_poweron(panel_mipi_dbi);
+		if (ret)
+			goto cat_error;
+		ret = panel_mipi_dbi_cat_commands(dbidev);
+		if (ret)
+			goto cat_error;
+		ret = backlight_enable(dbidev->backlight);
+		if (ret)
+			goto cat_error;
+		drm_info(drm, "CAT outer init and binary backlight enable completed\n");
+		goto out_exit;
+	}
+
 	ret = mipi_dbi_poweron_conditional_reset(dbidev);
 	if (ret < 0)
 		goto out_exit;
@@ -281,12 +407,18 @@ static void panel_mipi_dbi_crtc_helper_atomic_enable(struct drm_crtc *crtc,
 		panel_mipi_dbi_commands_execute(dbi, dbidev->driver_private);
 
 	backlight_enable(dbidev->backlight);
+	goto out_exit;
+cat_error:
+	drm_err(drm, "CAT enable failed: %d\n", ret);
+	panel_mipi_dbi_cat_off(panel_mipi_dbi);
 out_exit:
 	drm_dev_exit(idx);
 }
 
 static const struct drm_crtc_helper_funcs panel_mipi_dbi_crtc_helper_funcs = {
-	DRM_MIPI_DBI_CRTC_HELPER_FUNCS,
+	.mode_valid = drm_mipi_dbi_crtc_helper_mode_valid,
+	.atomic_check = drm_mipi_dbi_crtc_helper_atomic_check,
+	.atomic_disable = panel_mipi_dbi_crtc_helper_atomic_disable,
 	.atomic_enable = panel_mipi_dbi_crtc_helper_atomic_enable,
 };
 
@@ -395,6 +527,7 @@ static int panel_mipi_dbi_spi_probe(struct spi_device *spi)
 	dbidev = &panel_mipi_dbi->dbidev;
 	dbi = &dbidev->dbi;
 	drm = &dbidev->drm;
+	panel_mipi_dbi->cat_s22 = of_device_is_compatible(dev->of_node, "cat,s22flip-outer");
 
 	ret = panel_mipi_dbi_get_mode(dbidev, &mode);
 	if (ret)
@@ -410,13 +543,21 @@ static int panel_mipi_dbi_spi_probe(struct spi_device *spi)
 		return dev_err_probe(dev, PTR_ERR(dbidev->io_regulator),
 				     "Failed to get regulator 'io'\n");
 
+	if (panel_mipi_dbi->cat_s22 &&
+	    (!dbidev->regulator || !dbidev->io_regulator))
+		return dev_err_probe(dev, -EINVAL, "CAT requires power and I/O regulators\n");
+
 	dbidev->backlight = devm_of_find_backlight(dev);
 	if (IS_ERR(dbidev->backlight))
 		return dev_err_probe(dev, PTR_ERR(dbidev->backlight), "Failed to get backlight\n");
 
-	dbi->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	dbi->reset = devm_gpiod_get_optional(dev, "reset",
+					   panel_mipi_dbi->cat_s22 ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
 	if (IS_ERR(dbi->reset))
 		return dev_err_probe(dev, PTR_ERR(dbi->reset), "Failed to get GPIO 'reset'\n");
+
+	if (panel_mipi_dbi->cat_s22 && (!dbi->reset || !dbidev->backlight))
+		return dev_err_probe(dev, -EINVAL, "CAT requires reset and backlight\n");
 
 	/* Multiple panels can share the "dc" GPIO, but only if they are on the same SPI bus! */
 	dc = devm_gpiod_get_optional(dev, "dc", GPIOD_OUT_LOW | GPIOD_FLAGS_BIT_NONEXCLUSIVE);
@@ -437,6 +578,17 @@ static int panel_mipi_dbi_spi_probe(struct spi_device *spi)
 	ret = panel_mipi_dbi_get_format(dev, formats, &bpp);
 	if (ret)
 		return ret;
+
+	/*
+	 * The fitted CAT panel uses RGB565 over Type C option 3. Use
+	 * byte-wide transfers with the DBI core's big-endian conversion,
+	 * avoiding native 16-bit word ordering in the QUP PIO path.
+	 * Set both fields: conversion and transfer width must agree.
+	 */
+	if (panel_mipi_dbi->cat_s22 && formats[0] == DRM_FORMAT_RGB565 && dc) {
+		dbi->write_memory_bpw = 8;
+		dbi->swap_bytes = true;
+	}
 
 	buf_size = DIV_ROUND_UP(mode.hdisplay * mode.vdisplay * bpp, 8);
 	ret = drm_mipi_dbi_dev_init(dbidev, &mode, formats[0], 0, buf_size);

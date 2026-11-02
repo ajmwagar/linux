@@ -3492,6 +3492,10 @@ static int __genpd_dev_pm_attach(struct device *dev, struct device *base_dev,
 
 	mutex_lock(&gpd_list_lock);
 	pd = genpd_get_from_provider(&pd_args);
+	if (!strcmp(dev_name(dev), "1c40000.iommu"))
+		dev_info(dev, "CAT GPU GENPD: provider=%pOF cells=%d id=%u lookup=%ld\n",
+			 pd_args.np, pd_args.args_count, pd_args.args_count ? pd_args.args[0] : 0,
+			 IS_ERR(pd) ? PTR_ERR(pd) : 0L);
 	of_node_put(pd_args.np);
 	if (IS_ERR(pd)) {
 		mutex_unlock(&gpd_list_lock);
@@ -3529,6 +3533,8 @@ static int __genpd_dev_pm_attach(struct device *dev, struct device *base_dev,
 	if (power_on) {
 		genpd_lock(pd);
 		ret = genpd_power_on(pd, dev, 0);
+		if (!strcmp(dev_name(dev), "1c40000.iommu"))
+			dev_info(dev, "CAT GPU GENPD: domain=%s power-on=%d\n", pd->name, ret);
 		genpd_unlock(pd);
 	}
 

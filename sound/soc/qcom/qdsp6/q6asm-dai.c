@@ -1218,6 +1218,7 @@ static const struct snd_soc_dapm_widget q6asm_dapm_widgets[] = {
 
 static const struct snd_soc_component_driver q6asm_fe_dai_component = {
 	.name			= DRV_NAME,
+	.of_xlate_dai_name	= snd_soc_of_xlate_dai_name,
 	.open			= q6asm_dai_open,
 	.hw_params		= q6asm_dai_hw_params,
 	.close			= q6asm_dai_close,

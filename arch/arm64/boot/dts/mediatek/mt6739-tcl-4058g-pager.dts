@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/*
+ * TCL 4058G (Gflip6_NA_OM) - minimal mainline "pager" device tree
+ *
+ * First-boot milestone (bead reversal-fbyt): prove that a mainline arm64
+ * Image reaches earlycon on UART0 before any clock/pinctrl/pwrap driver
+ * exists.  This is deliberately the board DTS minus everything that needs a
+ * driver we do not have yet: no eMMC, no PMIC/pwrap, no panels, no keypad,
+ * no I2C/SPI/USB.  The SoC skeleton (GICv3, arch timer, PSCI, UART0) comes
+ * from mt6739.dtsi unchanged.
+ *
+ * The original board file mt6739-tcl-4058g.dts is NOT edited.
+ *
+ * UART0 facts (arch/arm64/boot/dts/mediatek/mt6739.dtsi, node serial@11002000):
+ *   reg        = <0 0x11002000 0 0x400>   -> earlycon mmio32 base 0x11002000
+ *   interrupts = <GIC_SPI 91 IRQ_TYPE_LEVEL_LOW>
+ *   clocks     = <&topckgen 47>, <&infracfg 20>
+ * The stock bootloader leaves UART0's pinmux (GPIO20 RX / GPIO21 TX, function
+ * 1) and clock gate programmed, so earlycon works without the pinctrl or clock
+ * drivers.  For ttyS0 we bind the 8250_mtk "baud"/"bus" clocks to the SoC's
+ * fixed 26 MHz crystal (the vendor console parent): the gate stays enabled by
+ * the bootloader, and the driver's fractional divider generates 921600 baud
+ * from 26 MHz.  The real TOPCKGEN/INFRACFG clock driver replaces this later.
+ */
+
+/dts-v1/;
+
+#include "mt6739.dtsi"
+
+/ {
+	model = "TCL 4058G pager (MT6739)";
+	compatible = "tcl,4058g-pager", "tcl,4058g", "mediatek,mt6739";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		/* Keep the baud here for the console core; earlycon is on cmdline. */
+		stdout-path = "serial0:921600n1";
+	};
+
+	/* 916 MiB usable of 1 GiB; same value the vendor kernel reports. */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x39400000>;
+	};
+};
+
+/*
+ * The debug UART.  Drop the DMA/pinctrl references: apdma is disabled and
+ * pinctrl-mt6739 does not exist yet, and 8250_mtk must not defer on them.
+ * The clock providers (TOPCKGEN/INFRACFG) have no driver yet, so bind both
+ * 8250_mtk clocks to the fixed 26 MHz crystal instead of the placeholder ids.
+ */
+&uart0 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/delete-property/ pinctrl-names;
+	/delete-property/ pinctrl-0;
+	clocks = <&clk26m>, <&clk26m>;
+	clock-names = "baud", "bus";
+	status = "okay";
+};
+
+/* Everything below is already disabled in mt6739.dtsi; restated so this
+ * milestone's boundary is explicit and greppable. */
+&mmc0 { status = "disabled"; };
+&mmc1 { status = "disabled"; };
+&usb0 { status = "disabled"; };
+&i2c0 { status = "disabled"; };
+&i2c3 { status = "disabled"; };
+&spi0 { status = "disabled"; };
+&spi1 { status = "disabled"; };
+&keypad { status = "disabled"; };
+&pwrap { status = "disabled"; };
+&auxadc { status = "disabled"; };
+&apdma { status = "disabled"; };

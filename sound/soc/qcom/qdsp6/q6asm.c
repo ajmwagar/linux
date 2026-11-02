@@ -704,7 +704,18 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 		client_event = ASM_CLIENT_EVENT_DATA_READ_DONE;
 		if (ac->io_mode & ASM_SYNC_IO_MODE) {
 			struct asm_data_cmd_read_v2_done *done = data->payload;
+			/* Bounded diagnostic: metadata only, never microphone payload. */
+			static atomic_t cat_read_reports = ATOMIC_INIT(0);
 			phys_addr_t phys;
+
+			if (atomic_inc_return(&cat_read_reports) <= 4)
+				dev_info(ac->dev,
+					 "CAT read_done token=%u status=%u bytes=%u addr=%08x:%08x\n",
+					 hdr->token, done->status, data->payload_size,
+					 done->buf_addr_msw, done->buf_addr_lsw);
+			if (atomic_read(&cat_read_reports) <= 4 && data->payload_size == 44)
+				dev_info(ac->dev, "CAT read_meta %*phN\n", 44,
+					 data->payload);
 
 			guard(spinlock_irqsave)(&ac->lock);
 			port =  &ac->port[SNDRV_PCM_STREAM_CAPTURE];

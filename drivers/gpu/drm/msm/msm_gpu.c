@@ -72,13 +72,22 @@ static int disable_clk(struct msm_gpu *gpu)
 {
 	clk_bulk_disable_unprepare(gpu->nr_clocks, gpu->grp_clks);
 
-	/*
-	 * Set the clock to a deliberately low rate. On older targets the clock
-	 * speed had to be non zero to avoid problems. On newer targets this
-	 * will be rounded down to zero anyway so it all works out.
+	/* Stay within the board's supported OPPs, including single-OPP tests.
+	 * A hardcoded 27 MHz request can round to an unsupported 50 MHz.
 	 */
-	if (gpu->core_clk)
-		dev_pm_opp_set_rate(&gpu->pdev->dev, 27000000);
+	if (gpu->core_clk) {
+		struct dev_pm_opp *opp;
+		unsigned long rate = 0;
+		int ret;
+
+		opp = dev_pm_opp_find_freq_ceil(&gpu->pdev->dev, &rate);
+		if (IS_ERR(opp))
+			return PTR_ERR(opp);
+		dev_pm_opp_put(opp);
+		ret = dev_pm_opp_set_rate(&gpu->pdev->dev, rate);
+		if (ret)
+			return ret;
+	}
 
 	if (gpu->rbbmtimer_clk)
 		clk_set_rate(gpu->rbbmtimer_clk, 0);
@@ -956,15 +965,23 @@ int msm_gpu_init(struct drm_device *drm, struct platform_device *pdev,
 		gpu->ebi1_clk = NULL;
 
 	/* Acquire regulators: */
-	gpu->gpu_reg = devm_regulator_get(&pdev->dev, "vdd");
+	gpu->gpu_reg = devm_regulator_get_optional(&pdev->dev, "vdd");
 	DBG("gpu_reg: %p", gpu->gpu_reg);
-	if (IS_ERR(gpu->gpu_reg))
+	if (IS_ERR(gpu->gpu_reg)) {
+		ret = PTR_ERR(gpu->gpu_reg);
 		gpu->gpu_reg = NULL;
+		if (ret != -ENODEV)
+			goto fail;
+	}
 
-	gpu->gpu_cx = devm_regulator_get(&pdev->dev, "vddcx");
+	gpu->gpu_cx = devm_regulator_get_optional(&pdev->dev, "vddcx");
 	DBG("gpu_cx: %p", gpu->gpu_cx);
-	if (IS_ERR(gpu->gpu_cx))
+	if (IS_ERR(gpu->gpu_cx)) {
+		ret = PTR_ERR(gpu->gpu_cx);
 		gpu->gpu_cx = NULL;
+		if (ret != -ENODEV)
+			goto fail;
+	}
 
 	platform_set_drvdata(pdev, &gpu->adreno_smmu);
 

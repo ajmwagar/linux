@@ -965,7 +965,7 @@ static const struct snd_soc_dapm_widget msm8916_wcd_digital_dapm_widgets[] = {
 	SND_SOC_DAPM_MUX("CIC1 MUX", SND_SOC_NOPM, 0, 0, &cic1_mux),
 	SND_SOC_DAPM_MUX("CIC2 MUX", SND_SOC_NOPM, 0, 0, &cic2_mux),
 	/* TX */
-	SND_SOC_DAPM_MIXER("ADC1", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_MIXER("QM215 ADC1", SND_SOC_NOPM, 0, 0, NULL, 0),
 	SND_SOC_DAPM_MIXER("ADC2", SND_SOC_NOPM, 0, 0, NULL, 0),
 	SND_SOC_DAPM_MIXER("ADC3", SND_SOC_NOPM, 0, 0, NULL, 0),
 
@@ -1558,7 +1558,10 @@ static int qm215_handset_event(struct snd_soc_dapm_widget *w,
 
 static const struct snd_soc_dapm_widget qm215_handset_widgets[] = {
 	SND_SOC_DAPM_INPUT("LPASS_PDM_TX"),
-	SND_SOC_DAPM_MIXER("ADC1", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_MIXER("QM215 ADC1", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_MUX("IIR1 INP1 MUX", SND_SOC_NOPM, 0, 0, &iir1_inp1_mux),
+	SND_SOC_DAPM_PGA_E("IIR1", LPASS_CDC_CLK_SD_CTL, 0, 0, NULL, 0,
+		msm8x16_wcd_codec_set_iir_gain, SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_MUX_E("DEC1 MUX", LPASS_CDC_CLK_TX_CLK_EN_B1_CTL, 0, 0,
 		&qm215_dec_mux, qm215_handset_event,
 		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
@@ -1574,15 +1577,19 @@ static const struct snd_soc_dapm_route qm215_handset_routes[] = {
 	{ "AIF1 Capture", NULL, "I2S TX1" },
 	{ "I2S TX1", NULL, "DEC1 MUX" },
 	{ "I2S TX1", NULL, "TX_I2S_CLK" },
-	{ "DEC1 MUX", "ADC1", "ADC1" },
+	{ "IIR1", NULL, "IIR1 INP1 MUX" },
+	{ "IIR1 INP1 MUX", "DEC1", "DEC1 MUX" },
+	{ "DEC1 MUX", "ADC1", "QM215 ADC1" },
 	{ "DEC1 MUX", NULL, "CDC_CONN" },
-	{ "ADC1", NULL, "LPASS_PDM_TX" },
+	{ "QM215 ADC1", NULL, "LPASS_PDM_TX" },
 	{ "TX_I2S_CLK", NULL, "MCLK" },
 	{ "TX_I2S_CLK", NULL, "PDM_CLK" },
 };
 
 static const struct snd_kcontrol_new qm215_handset_controls[] = {
 	SOC_SINGLE_S8_TLV("TX1 Digital Volume", LPASS_CDC_TX1_VOL_CTL_GAIN,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("IIR1 INP1 Volume", LPASS_CDC_IIR1_GAIN_B1_CTL,
 		-84, 40, digital_gain),
 };
 

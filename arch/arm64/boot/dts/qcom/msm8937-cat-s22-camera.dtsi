@@ -1,0 +1,242 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+/*
+ * CAT S22 Flip QM215 camera bring-up.
+ *
+ * Sources:
+ *  - /opt/bob/msm-4.9/arch/arm64/boot/dts/qcom/qm215-camera.dtsi
+ *  - /opt/bob/msm-4.9/arch/arm64/boot/dts/qcom/qm215-camera-sensor-qrd.dtsi
+ *  - cat-s22/out/resume-20261029/lk2nd-stock-live.dts (fitted CAT GPIOs)
+ *
+ * The QM215 camera block is the MSM8953/CAMSS 8x53 register set:
+ * CSIPHY 3.4.2, CSID 3.4.3, ISPIF 3.0, VFE40, CCI v1.5 (two masters).
+ */
+
+/ {
+	cam_vdig: regulator-cam-vdig {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vdig";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		gpio = <&tlmm 25 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+};
+
+&tlmm {
+	cci0_default: cci0-default-state {
+		pins = "gpio29", "gpio30";
+		function = "cci_i2c";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cci1_default: cci1-default-state {
+		pins = "gpio31", "gpio32";
+		function = "cci_i2c";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_sensor_mclk0_default: cam-sensor-mclk0-default-state {
+		pins = "gpio26";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_sensor_mclk0_sleep: cam-sensor-mclk0-sleep-state {
+		pins = "gpio26";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	cam_sensor_mclk2_default: cam-sensor-mclk2-default-state {
+		pins = "gpio28";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_sensor_mclk2_sleep: cam-sensor-mclk2-sleep-state {
+		pins = "gpio28";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
+
+&soc {
+	cci: cci@1b0c000 {
+		compatible = "qcom,msm8953-cci";
+		reg = <0x1b0c000 0x4000>;
+		interrupts = <GIC_SPI 50 IRQ_TYPE_EDGE_RISING>;
+
+		clocks = <&gcc GCC_CAMSS_ISPIF_AHB_CLK>,
+			 <&gcc CCI_CLK_SRC>,
+			 <&gcc GCC_CAMSS_TOP_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CCI_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CCI_CLK>,
+			 <&gcc GCC_CAMSS_AHB_CLK>;
+		clock-names = "ispif_ahb", "cci_src", "camss_top_ahb",
+			      "cci_ahb", "cci", "camss_ahb";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cci0_default &cci1_default>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		cci_i2c0: i2c-bus@0 {
+			reg = <0>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gc5035: camera@37 {
+				compatible = "galaxycore,gc5035";
+				reg = <0x37>;
+
+				avdd-supply = <&pm8916_l16>;
+				dovdd-supply = <&pm8916_l6>;
+				dvdd-supply = <&cam_vdig>;
+
+				clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+				clock-names = "xvclk";
+				assigned-clock-rates = <24000000>;
+
+				reset-gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
+
+				pinctrl-names = "default", "sleep";
+				pinctrl-0 = <&cam_sensor_mclk0_default>;
+				pinctrl-1 = <&cam_sensor_mclk0_sleep>;
+
+				port {
+					gc5035_out: endpoint {
+						data-lanes = <1 2>;
+						remote-endpoint = <&csiphy0_in>;
+					};
+				};
+			};
+		};
+
+		cci_i2c1: i2c-bus@1 {
+			reg = <1>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gc02m2: camera@37 {
+				compatible = "galaxycore,gc02m2";
+				reg = <0x37>;
+
+				avdd-supply = <&pm8916_l16>;
+				dovdd-supply = <&pm8916_l6>;
+				dvdd-supply = <&cam_vdig>;
+
+				clocks = <&gcc GCC_CAMSS_MCLK2_CLK>;
+				clock-names = "xvclk";
+				assigned-clock-rates = <24000000>;
+
+				reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+
+				pinctrl-names = "default", "sleep";
+				pinctrl-0 = <&cam_sensor_mclk2_default>;
+				pinctrl-1 = <&cam_sensor_mclk2_sleep>;
+
+				port {
+					gc02m2_out: endpoint {
+						data-lanes = <1>;
+						remote-endpoint = <&csiphy1_in>;
+					};
+				};
+			};
+		};
+	};
+
+	camss: camss@1b0ac00 {
+		compatible = "qcom,msm8953-camss";
+		reg = <0x1b34000 0x1000>,
+		      <0x1b00030 0x4>,
+		      <0x1b35000 0x1000>,
+		      <0x1b00038 0x4>,
+		      <0x1b30000 0x400>,
+		      <0x1b30400 0x400>,
+		      <0x1b31000 0x500>,
+		      <0x1b00020 0x10>,
+		      <0x1b10000 0x1000>,
+		      <0x1b30800 0x400>,
+		      <0x1b40000 0x200>;
+		reg-names = "csiphy0", "csiphy0_clk_mux",
+			    "csiphy1", "csiphy1_clk_mux",
+			    "csid0", "csid1", "ispif", "csi_clk_mux",
+			    "vfe0", "csid2", "vfe0_vbif";
+
+		clocks = <&gcc GCC_CAMSS_TOP_AHB_CLK>,
+			 <&gcc GCC_CAMSS_ISPIF_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CSI0PHYTIMER_CLK>,
+			 <&gcc GCC_CAMSS_CSI1PHYTIMER_CLK>,
+			 <&gcc GCC_CAMSS_CSI0_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CSI0_CLK>,
+			 <&gcc GCC_CAMSS_CSI0PHY_CLK>,
+			 <&gcc GCC_CAMSS_CSI0PIX_CLK>,
+			 <&gcc GCC_CAMSS_CSI0RDI_CLK>,
+			 <&gcc GCC_CAMSS_CSI1_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CSI1_CLK>,
+			 <&gcc GCC_CAMSS_CSI1PHY_CLK>,
+			 <&gcc GCC_CAMSS_CSI1PIX_CLK>,
+			 <&gcc GCC_CAMSS_CSI1RDI_CLK>,
+			 <&gcc GCC_CAMSS_AHB_CLK>,
+			 <&gcc GCC_CAMSS_VFE0_CLK>,
+			 <&gcc GCC_CAMSS_CSI_VFE0_CLK>,
+			 <&gcc GCC_CAMSS_VFE0_AHB_CLK>,
+			 <&gcc GCC_CAMSS_VFE0_AXI_CLK>,
+			 <&gcc GCC_CAMSS_CSI2_AHB_CLK>,
+			 <&gcc GCC_CAMSS_CSI2_CLK>,
+			 <&gcc GCC_CAMSS_CSI2PHY_CLK>,
+			 <&gcc GCC_CAMSS_CSI2PIX_CLK>,
+			 <&gcc GCC_CAMSS_CSI2RDI_CLK>;
+		clock-names = "top_ahb", "ispif_ahb",
+			      "csiphy0_timer", "csiphy1_timer",
+			      "csi0_ahb", "csi0", "csi0_phy", "csi0_pix", "csi0_rdi",
+			      "csi1_ahb", "csi1", "csi1_phy", "csi1_pix", "csi1_rdi",
+			      "ahb", "vfe0", "csi_vfe0", "vfe_ahb", "vfe_axi",
+			      "csi2_ahb", "csi2", "csi2_phy", "csi2_pix", "csi2_rdi";
+
+		interrupts = <GIC_SPI 78 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 79 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 51 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 52 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 55 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 57 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 153 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "csiphy0", "csiphy1", "csid0", "csid1",
+				  "ispif", "vfe0", "csid2";
+
+		vdda-supply = <&pm8916_l16>;
+		power-domains = <&gcc VFE0_GDSC>;
+		iommus = <&apps_iommu 3>;
+
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				csiphy0_in: endpoint {
+					remote-endpoint = <&gc5035_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				csiphy1_in: endpoint {
+					remote-endpoint = <&gc02m2_out>;
+				};
+			};
+		};
+	};
+};

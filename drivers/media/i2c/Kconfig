@@ -1845,3 +1845,17 @@ source "drivers/media/i2c/maxim-serdes/Kconfig"
 endmenu
 
 endif # VIDEO_DEV
+
+config VIDEO_GC5035
+	tristate "GalaxyCore GC5035 sensor support"
+	depends on I2C && VIDEO_DEV && VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  This is a V4L2 sensor driver for GalaxyCore GC5035.
+
+config VIDEO_GC02M2
+	tristate "GalaxyCore GC02M2 sensor support"
+	depends on I2C && VIDEO_DEV && VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  This is a V4L2 sensor driver for GalaxyCore GC02M2.

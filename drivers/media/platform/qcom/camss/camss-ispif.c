@@ -1149,19 +1149,26 @@ int msm_ispif_subdev_init(struct camss *camss,
 
 	/* Memory */
 
+	dev_info(dev, "CAT ispif: map %s / %s / irq %s\n", res->reg[0], res->reg[1], res->interrupt[0]);
 	ispif->base = devm_platform_ioremap_resource_byname(pdev, res->reg[0]);
-	if (IS_ERR(ispif->base))
+	if (IS_ERR(ispif->base)) {
+		dev_err(dev, "CAT ispif: map %s err %ld\n", res->reg[0], PTR_ERR(ispif->base));
 		return PTR_ERR(ispif->base);
+	}
 
 	ispif->base_clk_mux = devm_platform_ioremap_resource_byname(pdev, res->reg[1]);
-	if (IS_ERR(ispif->base_clk_mux))
+	if (IS_ERR(ispif->base_clk_mux)) {
+		dev_err(dev, "CAT ispif: map %s err %ld\n", res->reg[1], PTR_ERR(ispif->base_clk_mux));
 		return PTR_ERR(ispif->base_clk_mux);
+	}
 
 	/* Interrupt */
 
 	ret = platform_get_irq_byname(pdev, res->interrupt[0]);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "CAT ispif: irq %s err %d\n", res->interrupt[0], ret);
 		return ret;
+	}
 
 	ispif->irq = ret;
 	snprintf(ispif->irq_name, sizeof(ispif->irq_name), "%s_%s",
@@ -1199,8 +1206,10 @@ int msm_ispif_subdev_init(struct camss *camss,
 		struct camss_clock *clock = &ispif->clock[i];
 
 		clock->clk = devm_clk_get(dev, res->clock[i]);
-		if (IS_ERR(clock->clk))
+		if (IS_ERR(clock->clk)) {
+			dev_err(dev, "CAT ispif: clock %s err %ld\n", res->clock[i], PTR_ERR(clock->clk));
 			return PTR_ERR(clock->clk);
+		}
 
 		clock->freq = NULL;
 		clock->nfreqs = 0;
@@ -1221,8 +1230,10 @@ int msm_ispif_subdev_init(struct camss *camss,
 		struct camss_clock *clock = &ispif->clock_for_reset[i];
 
 		clock->clk = devm_clk_get(dev, res->clock_for_reset[i]);
-		if (IS_ERR(clock->clk))
+		if (IS_ERR(clock->clk)) {
+			dev_err(dev, "CAT ispif: reset clock %s err %ld\n", res->clock_for_reset[i], PTR_ERR(clock->clk));
 			return PTR_ERR(clock->clk);
+		}
 
 		clock->freq = NULL;
 		clock->nfreqs = 0;

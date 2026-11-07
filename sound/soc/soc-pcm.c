@@ -1622,6 +1622,9 @@ int dpcm_add_paths(struct snd_soc_pcm_runtime *fe, int stream,
 
 		/* is there a valid BE rtd for this widget */
 		be = dpcm_get_be(card, widget, stream);
+		pr_info("CATTEST FE %s widget %s stream %d be %s\n",
+			fe->dai_link->name, widget->name, stream,
+			be ? be->dai_link->name : "NONE");
 		if (!be) {
 			dev_dbg(fe->dev, "ASoC: no BE found for %s\n",
 				widget->name);
@@ -1718,6 +1721,7 @@ int dpcm_be_dai_startup(struct snd_soc_pcm_runtime *fe, int stream)
 	struct snd_soc_dpcm *dpcm;
 	int err, count = 0;
 
+	pr_info("CATTEST BE startup FE %s stream %d\n", fe->dai_link->name, stream);
 	/* only startup BE DAIs that are either sinks or sources to this FE DAI */
 	for_each_dpcm_be(fe, stream, dpcm) {
 		struct snd_pcm_substream *be_substream;
@@ -1750,6 +1754,8 @@ int dpcm_be_dai_startup(struct snd_soc_pcm_runtime *fe, int stream)
 		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_CLOSE))
 			continue;
 
+		pr_info("CATTEST starting BE %s for FE %s stream %d\n",
+			be->dai_link->name, fe->dai_link->name, stream);
 		dev_dbg(be->dev, "ASoC: open %s BE %s\n",
 			snd_pcm_direction_name(stream), be->dai_link->name);
 
@@ -2504,6 +2510,8 @@ int dpcm_be_dai_prepare(struct snd_soc_pcm_runtime *fe, int stream)
 	struct snd_soc_dpcm *dpcm;
 	int ret = 0;
 
+	pr_info("CATTEST BE prepare FE %s stream %d\n", fe->dai_link->name, stream);
+
 	for_each_dpcm_be(fe, stream, dpcm) {
 
 		struct snd_soc_pcm_runtime *be = dpcm->be;
@@ -2523,10 +2531,13 @@ int dpcm_be_dai_prepare(struct snd_soc_pcm_runtime *fe, int stream)
 		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_PAUSED))
 			continue;
 
+		pr_info("CATTEST preparing BE %s state %d\n", be->dai_link->name,
+			be->dpcm[stream].state);
 		dev_dbg(be->dev, "ASoC: prepare BE %s\n",
 			be->dai_link->name);
 
 		ret = __soc_pcm_prepare(be, be_substream);
+		pr_info("CATTEST prepared BE %s ret %d\n", be->dai_link->name, ret);
 		if (ret < 0)
 			break;
 
@@ -2547,6 +2558,7 @@ static int dpcm_fe_dai_prepare(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *fe = snd_soc_substream_to_rtd(substream);
 	int stream = substream->stream, ret = 0;
 
+	pr_info("CATTEST FE prepare %s stream %d\n", fe->dai_link->name, stream);
 	snd_soc_dpcm_mutex_lock(fe);
 
 	dev_dbg(fe->dev, "ASoC: prepare FE %s\n", fe->dai_link->name);
@@ -2563,6 +2575,11 @@ static int dpcm_fe_dai_prepare(struct snd_pcm_substream *substream)
 		goto out;
 
 	fe->dpcm[stream].state = SND_SOC_DPCM_STATE_PREPARE;
+
+	/* Bring the prepared backend DAPM paths up as well.  Without this,
+	 * a route selected before the FE is opened prepares but never powers.
+	 */
+	dpcm_dapm_stream_event(fe, stream, SND_SOC_DAPM_STREAM_START);
 
 out:
 	dpcm_set_fe_update_state(fe, stream, SND_SOC_DPCM_UPDATE_NO);

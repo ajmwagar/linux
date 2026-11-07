@@ -169,6 +169,7 @@ static int pm8916_bms_vm_battery_probe(struct platform_device *pdev)
 	ret = regmap_bulk_read(bat->regmap, bat->reg + PM8916_PERPH_TYPE, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 
 	if (tmp != PM8916_BMS_VM_TYPE)
 		return dev_err_probe(dev, -ENODEV, "Device reported wrong type: 0x%X\n", tmp);
@@ -194,6 +195,7 @@ static int pm8916_bms_vm_battery_probe(struct platform_device *pdev)
 			       bat->reg + PM8916_BMS_VM_S3_S7_OCV_DATA0, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 
 	bat->last_ocv_time = ktime_get_seconds();
 	bat->last_ocv = tmp * 300;

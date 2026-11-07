@@ -2674,6 +2674,50 @@ static const struct rproc_hexagon_res msm8937_mss = {
 	.ssctl_id = 0x12,
 };
 
+/*
+ * QM215 / CAT S22: the fitted stock DT routes MSS/CX through the S1 level
+ * resource, not a separate 1.05 V regulator, and has no qcom,pil-mss-memsetup
+ * property. Keep the same clocks/reset/PDs as MSM8937 but do not acquire an
+ * active mss supply. This is registration-only until the CX/MX provider and
+ * MBA reservation are qualified.
+ */
+static const struct rproc_hexagon_res qm215_mss = {
+	.hexagon_mba_image = "mba.mbn",
+	.proxy_supply = (struct qcom_mss_reg_res[]) {
+		{
+			.supply = "pll",
+			.uA = 100000,
+		},
+		{}
+	},
+	.proxy_clk_names = (char*[]){
+		"xo",
+		NULL
+	},
+	.active_clk_names = (char*[]){
+		"iface",
+		"bus",
+		"mem",
+		NULL
+	},
+	.proxy_pd_names = (char*[]) {
+		"cx",
+		"mx",
+		NULL
+	},
+	.need_mem_protection = false,
+	.need_pas_mem_setup = false,
+	.has_alt_reset = false,
+	.has_mba_logs = false,
+	.has_spare_reg = false,
+	.has_qaccept_regs = false,
+	.has_ext_bhs_reg = false,
+	.has_ext_cntl_regs = false,
+	.has_vq6 = false,
+	.version = MSS_MSM8937,
+	.ssctl_id = 0x12,
+};
+
 static const struct rproc_hexagon_res msm8940_mss = {
 	.hexagon_mba_image = "mba.mbn",
 	.proxy_supply = (struct qcom_mss_reg_res[]) {
@@ -2909,6 +2953,7 @@ static const struct of_device_id q6v5_of_match[] = {
 	{ .compatible = "qcom,msm8917-mss-pil", .data = &msm8917_mss },
 	{ .compatible = "qcom,msm8926-mss-pil", .data = &msm8926_mss },
 	{ .compatible = "qcom,msm8937-mss-pil", .data = &msm8937_mss },
+	{ .compatible = "qcom,qm215-mss-pil", .data = &qm215_mss },
 	{ .compatible = "qcom,msm8940-mss-pil", .data = &msm8940_mss },
 	{ .compatible = "qcom,msm8953-mss-pil", .data = &msm8953_mss },
 	{ .compatible = "qcom,msm8974-mss-pil", .data = &msm8974_mss },

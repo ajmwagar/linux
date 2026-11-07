@@ -276,24 +276,28 @@ static int pm8916_lbc_charger_probe(struct platform_device *pdev)
 	ret = regmap_bulk_read(chg->regmap, chg->reg[LBC_CHGR] + PM8916_PERPH_TYPE, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 	if (tmp != PM8916_LBC_CHGR_TYPE)
 		goto type_error;
 
 	ret = regmap_bulk_read(chg->regmap, chg->reg[LBC_BAT_IF] + PM8916_PERPH_TYPE, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 	if (tmp != PM8916_LBC_BAT_IF_TYPE)
 		goto type_error;
 
 	ret = regmap_bulk_read(chg->regmap, chg->reg[LBC_USB] + PM8916_PERPH_TYPE, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 	if (tmp != PM8916_LBC_USB_TYPE)
 		goto type_error;
 
 	ret = regmap_bulk_read(chg->regmap, chg->reg[LBC_MISC] + PM8916_PERPH_TYPE, &tmp, 2);
 	if (ret)
 		goto comm_error;
+	tmp &= 0xFFFF;
 	if (tmp != PM8916_LBC_MISC_TYPE)
 		goto type_error;
 

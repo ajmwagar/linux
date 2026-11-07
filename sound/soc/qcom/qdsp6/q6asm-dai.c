@@ -73,6 +73,8 @@ struct q6asm_dai_rtd {
 	enum stream_state state;
 	uint32_t initial_samples_drop;
 	uint32_t trailing_samples_drop;
+	unsigned int sentinel_events;
+	bool sentinel_ready;
 	bool notify_on_drain;
 };
 
@@ -176,6 +178,57 @@ static const struct snd_compr_codec_caps q6asm_compr_caps = {
 	.descriptor[0].formats = 0,
 };
 
+/* DIAGNOSTIC ONLY: this capture contains a sentinel, NOT qualified audio. */
+static int q6asm_sentinel_range(size_t bytes, size_t period, unsigned int periods,
+		unsigned int token, size_t *offset)
+{
+	if (!period || !periods || token >= periods ||
+	    period > bytes / periods)
+		return -EINVAL;
+	*offset = (size_t)token * period;
+	return 0;
+}
+
+static void q6asm_sentinel_count(const unsigned char *buf, size_t bytes,
+		size_t *same, size_t *zero, size_t *other)
+{
+	size_t i;
+
+	*same = *zero = *other = 0;
+	for (i = 0; i < bytes; i++) {
+		if (buf[i] == 0xa5)
+			(*same)++;
+		else if (!buf[i])
+			(*zero)++;
+		else
+			(*other)++;
+	}
+}
+
+static void q6asm_sentinel_event(struct q6asm_dai_rtd *prtd, unsigned int token)
+{
+	struct snd_pcm_runtime *runtime = prtd->substream->runtime;
+	size_t offset, same, zero, other;
+
+	if (!prtd->sentinel_ready || prtd->sentinel_events >= 4)
+		return;
+	prtd->sentinel_events++;
+	if (q6asm_sentinel_range(prtd->pcm_size, prtd->pcm_count,
+			prtd->periods, token, &offset) ||
+	    prtd->pcm_size > runtime->dma_bytes || !runtime->dma_area) {
+		pr_err("q6asm sentinel invalid range token=%u bytes=%u period=%u periods=%u\n",
+			token, prtd->pcm_size, prtd->pcm_count, prtd->periods);
+		return;
+	}
+	/* Completion precedes inspection; inspect before elapsed/requeue. */
+	dma_rmb();
+	q6asm_sentinel_count((unsigned char *)runtime->dma_area + offset,
+		prtd->pcm_count, &same, &zero, &other);
+	pr_info("q6asm sentinel NOT_AUDIO session=%u stream=%u token=%u bytes=%u same=%zu zero=%zu other=%zu\n",
+		prtd->session_id, prtd->stream_id, token, prtd->pcm_count,
+		same, zero, other);
+}
+
 static void event_handler(uint32_t opcode, uint32_t token,
 			  void *payload, void *priv)
 {
@@ -191,6 +244,7 @@ static void event_handler(uint32_t opcode, uint32_t token,
 		snd_pcm_period_elapsed(substream);
 		break;
 	case ASM_CLIENT_EVENT_DATA_READ_DONE:
+		q6asm_sentinel_event(prtd, token);
 		snd_pcm_period_elapsed(substream);
 		if (prtd->state == Q6ASM_STREAM_RUNNING)
 			q6asm_read(prtd->audio_client, prtd->stream_id);
@@ -221,6 +275,7 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 		return -EINVAL;
 	}
 
+	prtd->sentinel_ready = false;
 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
 	/* rate and channels are sent to audio driver */
 	if (prtd->state == Q6ASM_STREAM_RUNNING) {
@@ -289,9 +344,28 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 							   runtime->channels,
 							   prtd->bits_per_sample);
 
+		if (ret < 0)
+			goto sentinel_err;
+		/* Seed once before any initial READ, never while DSP owns buffers. */
+		if (!runtime->dma_area || prtd->pcm_size > runtime->dma_bytes ||
+		    prtd->pcm_size != frames_to_bytes(runtime, runtime->buffer_size) ||
+		    !prtd->periods || prtd->pcm_size / prtd->periods != prtd->pcm_count ||
+		    prtd->pcm_size % prtd->periods) {
+			ret = -EINVAL;
+			goto sentinel_err;
+		}
+		memset(runtime->dma_area, 0xa5, prtd->pcm_size);
+		prtd->sentinel_events = 0;
+		prtd->sentinel_ready = true;
+		dma_wmb();
+		dev_warn(dev, "SENTINEL CAPTURE NOT AUDIO bytes=%u period=%u periods=%u\n",
+			 prtd->pcm_size, prtd->pcm_count, prtd->periods);
 		/* Queue the buffers */
-		for (i = 0; i < runtime->periods; i++)
-			q6asm_read(prtd->audio_client, prtd->stream_id);
+		for (i = 0; i < runtime->periods; i++) {
+			ret = q6asm_read(prtd->audio_client, prtd->stream_id);
+			if (ret < 0)
+				goto sentinel_err;
+		}
 
 	}
 	if (ret < 0)
@@ -301,6 +375,9 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 
 	return ret;
 
+sentinel_err:
+	prtd->sentinel_ready = false;
+	q6routing_stream_close(soc_prtd->dai_link->id, substream->stream);
 routing_err:
 	q6asm_cmd(prtd->audio_client, prtd->stream_id,  CMD_CLOSE);
 open_err:

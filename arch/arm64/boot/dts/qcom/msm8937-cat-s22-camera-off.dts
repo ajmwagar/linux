@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+#include "msm8937-cat-s22-pager.dts"
+
+&cci {
+	status = "disabled";
+};
+
+&camss {
+	status = "disabled";
+};
+
+&gc5035 {
+	status = "disabled";
+};
+
+&gc02m2 {
+	status = "disabled";
+};
+
+&cam_vdig {
+	status = "disabled";
+};

@@ -1798,7 +1798,7 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 
 	/* Power domain */
 
-	if (res->vfe.pd_name) {
+	if (false && res->vfe.pd_name) {
 		vfe->genpd = dev_pm_domain_attach_by_name(camss->dev,
 							  res->vfe.pd_name);
 		if (IS_ERR(vfe->genpd)) {
@@ -1807,7 +1807,7 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 		}
 	}
 
-	if (!vfe->genpd && res->vfe.has_pd) {
+	if (false && res->vfe.has_pd) {
 		/*
 		 * Legacy magic index.
 		 * Requires

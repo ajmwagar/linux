@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+/*
+ * CAT S22 camera isolation image:
+ * CCI v1.5 enabled, CAMSS and both sensors disabled.
+ * This tests whether the CCI controller/clock/pinctrl path is safe.
+ */
+
+#include "msm8937-cat-s22-pager.dts"
+
+&camss {
+	status = "disabled";
+};
+
+&gc5035 {
+	status = "disabled";
+};
+
+&gc02m2 {
+	status = "disabled";
+};
+
+&cam_vdig {
+	status = "disabled";
+};

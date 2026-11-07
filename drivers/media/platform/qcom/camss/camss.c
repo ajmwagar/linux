@@ -5606,9 +5606,11 @@ static const struct camss_resources msm8953_resources = {
 	.csid_res = csid_res_8x53,
 	.ispif_res = &ispif_res_8x53,
 	.vfe_res = vfe_res_8x53,
-	.csiphy_num = ARRAY_SIZE(csiphy_res_8x96),
+	/* CAT S22 / QM215 has only CSIPHY0 and CSIPHY1 wired. */
+	.csiphy_num = 2,
 	.csid_num = ARRAY_SIZE(csid_res_8x53),
-	.vfe_num = ARRAY_SIZE(vfe_res_8x53),
+	/* CAT S22 / QM215 has only VFE0. */
+	.vfe_num = 1,
 };
 
 static const struct camss_resources msm8996_resources = {

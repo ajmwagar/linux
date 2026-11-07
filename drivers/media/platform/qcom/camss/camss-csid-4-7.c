@@ -7,6 +7,7 @@
  * Copyright (C) 2020 Linaro Ltd.
  */
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -30,9 +31,15 @@
 #define CAMSS_CSID_CID_n_CFG_PLAIN_ALIGNMENT_MSB	(1 << 9)
 #define CAMSS_CSID_CID_n_CFG_RDI_MODE_RAW_DUMP		(0 << 10)
 #define CAMSS_CSID_CID_n_CFG_RDI_MODE_PLAIN_PACKING	(1 << 10)
-#define CAMSS_CSID_IRQ_CLEAR_CMD	0x064
-#define CAMSS_CSID_IRQ_MASK		0x068
-#define CAMSS_CSID_IRQ_STATUS		0x06c
+/*
+ * Fitted CAT S22 CSID is CSID 3.4.3, not the 4.7 register layout assumed
+ * by the generic aliases below.  The vendor register table puts IRQ clear,
+ * mask and status four bytes earlier.
+ */
+#define CAMSS_CSID_IRQ_CLEAR_CMD	0x060
+#define CAMSS_CSID_IRQ_MASK		0x064
+#define CAMSS_CSID_IRQ_STATUS		0x068
+#define CAT_CSID_IRQ_MASK_VAL		0x7f010800
 #define CAMSS_CSID_TG_CTRL		0x0a8
 #define CAMSS_CSID_TG_CTRL_DISABLE	0xa06436
 #define CAMSS_CSID_TG_CTRL_ENABLE	0xa06437
@@ -179,20 +186,43 @@ static irqreturn_t csid_isr(int irq, void *dev)
  */
 static int csid_reset(struct csid_device *csid)
 {
-	unsigned long time;
+	int i;
+	u32 status;
 
 	reinit_completion(&csid->reset_complete);
 
+	/*
+	 * On this hardware the reset-done interrupt is masked by default.  The
+	 * vendor CSID mask value includes reset-done (bit 11) and the related
+	 * CSI2 data-lane error bits.
+	 */
+	writel_relaxed(CAT_CSID_IRQ_MASK_VAL,
+		       csid->base + CAMSS_CSID_IRQ_MASK);
+	writel_relaxed(CAT_CSID_IRQ_MASK_VAL,
+		       csid->base + CAMSS_CSID_IRQ_CLEAR_CMD);
+
 	writel_relaxed(0x7fff, csid->base + CAMSS_CSID_RST_CMD);
 
-	time = wait_for_completion_timeout(&csid->reset_complete,
-					   msecs_to_jiffies(CSID_RESET_TIMEOUT_MS));
-	if (!time) {
-		dev_err(csid->camss->dev, "CSID reset timeout\n");
-		return -EIO;
+	/*
+	 * Keep the interrupt path, but also poll explicitly so a missing interrupt
+	 * delivery cannot make the driver miss an already-completed reset.
+	 */
+	for (i = 0; i < CSID_RESET_TIMEOUT_MS; i++) {
+		status = readl_relaxed(csid->base + CAMSS_CSID_IRQ_STATUS);
+		if (status & BIT(11)) {
+			dev_info(csid->camss->dev,
+				 "CSID reset completed, status=0x%08x\n",
+				 status);
+			return 0;
+		}
+		mdelay(1);
 	}
 
-	return 0;
+	status = readl_relaxed(csid->base + CAMSS_CSID_IRQ_STATUS);
+	dev_err(csid->camss->dev,
+		"CSID reset timeout, status=0x%08x mask=0x%08x\n",
+		status, readl_relaxed(csid->base + CAMSS_CSID_IRQ_MASK));
+	return -EIO;
 }
 
 static void csid_subdev_init(struct csid_device *csid)

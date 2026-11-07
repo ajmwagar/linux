@@ -107,6 +107,7 @@
 				assigned-clock-rates = <24000000>;
 
 				reset-gpios = <&tlmm 36 GPIO_ACTIVE_HIGH>;
+				pwdn-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
 
 				pinctrl-names = "default", "sleep";
 				pinctrl-0 = <&cam_sensor_mclk0_default>;
@@ -140,6 +141,7 @@
 				assigned-clock-rates = <24000000>;
 
 				reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+				pwdn-gpios = <&tlmm 39 GPIO_ACTIVE_LOW>;
 
 				pinctrl-names = "default", "sleep";
 				pinctrl-0 = <&cam_sensor_mclk2_default>;

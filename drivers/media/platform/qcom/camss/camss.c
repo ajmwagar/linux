@@ -329,7 +329,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid0" },
 		.interrupt = { "csid0" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
@@ -354,7 +354,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid1" },
 		.interrupt = { "csid1" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
@@ -379,7 +379,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid2" },
 		.interrupt = { "csid2" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}

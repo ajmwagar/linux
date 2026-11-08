@@ -13,6 +13,7 @@ qcom-camss-objs += \
 		camss-csid-gen3.o \
 		camss-csiphy.o \
 		camss-csiphy-2ph-1-0.o \
+		camss-csiphy-3-4-2.o \
 		camss-csiphy-3ph-1-0.o \
 		camss-format.o \
 		camss-ispif.o \

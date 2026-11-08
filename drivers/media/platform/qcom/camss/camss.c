@@ -5598,11 +5598,42 @@ static const struct camss_resources msm8939_resources = {
 	.vfe_num = ARRAY_SIZE(vfe_res_8x39),
 };
 
+static const struct camss_subdev_resources csiphy_res_8x53[] = {
+	/* CSIPHY0 */
+	{
+		.clock = { "top_ahb", "ispif_ahb", "ahb", "csiphy0_timer",
+			   "csi0_phy" },
+		.clock_rate = { { 0 }, { 0 }, { 0 },
+				{ 100000000, 200000000, 266666667 }, { 0 } },
+		.reg = { "csiphy0", "csiphy0_clk_mux" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_3_4_2,
+			.formats = &csiphy_formats_8x96
+		}
+	},
+	/* CSIPHY1 */
+	{
+		.clock = { "top_ahb", "ispif_ahb", "ahb", "csiphy1_timer",
+			   "csi1_phy" },
+		.clock_rate = { { 0 }, { 0 }, { 0 },
+				{ 100000000, 200000000, 266666667 }, { 0 } },
+		.reg = { "csiphy1", "csiphy1_clk_mux" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_3_4_2,
+			.formats = &csiphy_formats_8x96
+		}
+	},
+};
+
 static const struct camss_resources msm8953_resources = {
 	.version = CAMSS_8x53,
 	.icc_res = icc_res_8x53,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x53),
-	.csiphy_res = csiphy_res_8x96,
+	.csiphy_res = csiphy_res_8x53,
 	.csid_res = csid_res_8x53,
 	.ispif_res = &ispif_res_8x53,
 	.vfe_res = vfe_res_8x53,

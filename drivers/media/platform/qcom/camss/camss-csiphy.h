@@ -139,5 +139,6 @@ extern const struct csiphy_formats csiphy_formats_sdm845;
 
 extern const struct csiphy_hw_ops csiphy_ops_2ph_1_0;
 extern const struct csiphy_hw_ops csiphy_ops_3ph_1_0;
+extern const struct csiphy_hw_ops csiphy_ops_3_4_2;
 
 #endif /* QC_MSM_CAMSS_CSIPHY_H */

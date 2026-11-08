@@ -43,11 +43,30 @@
 #define CAMSS_CSID_TG_DT_n_CGG_1(n)	(0x0b0 + 0xc * (n))
 #define CAMSS_CSID_TG_DT_n_CGG_2(n)	(0xb4 + 0xc * (n))
 
+static u32 csid_lane_assign_3_4_3(u32 lane_assign, u8 lane_cnt)
+{
+	static const u8 lane_map[] = { 0, 4, 1, 2, 3 };
+	u32 mapped = 0;
+	u8 i;
+
+	for (i = 0; i < lane_cnt; i++) {
+		u8 lane = (lane_assign >> (i * 4)) & 0xf;
+
+		if (lane >= ARRAY_SIZE(lane_map))
+			return lane_assign;
+
+		mapped |= lane_map[lane] << (i * 4);
+	}
+
+	return mapped;
+}
+
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_testgen_config *tg = &csid->testgen;
 	u32 sink_code = csid->fmt[MSM_CSID_PAD_SINK].code;
 	u32 src_code = csid->fmt[MSM_CSID_PAD_SRC].code;
+	u32 lane_assign;
 	u32 val;
 
 	if (enable) {
@@ -94,13 +113,15 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 						    csid->res->formats->nformats,
 						    input_format->code);
 
+			lane_assign = csid_lane_assign_3_4_3(phy->lane_assign,
+							      phy->lane_cnt);
 			val = phy->lane_cnt - 1;
-			val |= phy->lane_assign << 4;
+			val |= lane_assign << 4;
 
 			writel_relaxed(val, csid->base + CAMSS_CSID_CORE_CTRL_0);
 
 			val = phy->csiphy_id << 17;
-			val |= 0x9;
+			val |= 0xf;
 
 			writel_relaxed(val, csid->base + CAMSS_CSID_CORE_CTRL_1);
 		}

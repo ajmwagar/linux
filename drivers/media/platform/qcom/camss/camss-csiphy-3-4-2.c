@@ -100,7 +100,6 @@ static void csiphy_342_lanes_enable(struct csiphy_device *csiphy,
 
 	writel_relaxed(lane_enable, csiphy->base + CSIPHY_342_CMN_CTRL(5));
 	writel_relaxed(BIT(0), csiphy->base + CSIPHY_342_CMN_CTRL(6));
-	writel_relaxed(0x6, csiphy->base + CSIPHY_342_CMN_CTRL(7));
 
 	for (i = 0; i < lane_cfg->num_data; i++) {
 		offset = CSIPHY_342_LANE_OFFSET(i);

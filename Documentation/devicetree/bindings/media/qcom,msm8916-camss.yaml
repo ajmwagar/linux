@@ -82,6 +82,15 @@ properties:
             unevaluatedProperties: false
 
             properties:
+              qcom,lane-assign:
+                $ref: /schemas/types.yaml#/definitions/uint32
+                description:
+                  Optional sensor-lane-to-PHY lane assignment. The low
+                  nibble is the sensor lane connected to PHY data lane 0,
+                  the next nibble to PHY data lane 2, and so on. When
+                  present, CSID uses this instead of deriving the map from
+                  data-lanes.
+
               data-lanes:
                 description:
                   An array of physical data lanes indexes.
@@ -112,6 +121,15 @@ properties:
             unevaluatedProperties: false
 
             properties:
+              qcom,lane-assign:
+                $ref: /schemas/types.yaml#/definitions/uint32
+                description:
+                  Optional sensor-lane-to-PHY lane assignment. The low
+                  nibble is the sensor lane connected to PHY data lane 0,
+                  the next nibble to PHY data lane 2, and so on. When
+                  present, CSID uses this instead of deriving the map from
+                  data-lanes.
+
               data-lanes:
                 minItems: 1
                 maxItems: 4

@@ -1292,7 +1292,15 @@ static int csid_link_setup(struct media_entity *entity,
 
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
 			csid->phy.lane_cnt = lane_cfg->num_data;
-			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg, lane_cfg->num_data);
+			if (csiphy->lane_assign_valid)
+				csid->phy.lane_assign = csiphy->lane_assign;
+			else
+				csid->phy.lane_assign = csid_get_lane_assign(lane_cfg,
+									lane_cfg->num_data);
+			dev_info(csid->camss->dev,
+				 "CAT csid lane_cnt=%u assign=0x%x explicit=%d\n",
+				 csid->phy.lane_cnt, csid->phy.lane_assign,
+				 csiphy->lane_assign_valid);
 			csid->tpg_linked = false;
 		}
 	}

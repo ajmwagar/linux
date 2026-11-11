@@ -115,6 +115,8 @@ struct csiphy_device {
 	struct regulator_bulk_data *supplies;
 	int num_supplies;
 	struct csiphy_config cfg;
+	u32 lane_assign;
+	bool lane_assign_valid;
 	struct v4l2_mbus_framefmt fmt[MSM_CSIPHY_PADS_NUM];
 	const struct csiphy_subdev_resources *res;
 	struct csiphy_device_regs *regs;
@@ -139,5 +141,6 @@ extern const struct csiphy_formats csiphy_formats_sdm845;
 
 extern const struct csiphy_hw_ops csiphy_ops_2ph_1_0;
 extern const struct csiphy_hw_ops csiphy_ops_3ph_1_0;
+extern const struct csiphy_hw_ops csiphy_ops_3_4_2;
 
 #endif /* QC_MSM_CAMSS_CSIPHY_H */

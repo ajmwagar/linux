@@ -154,7 +154,7 @@
 
 				port {
 					gc5035_out: endpoint {
-						data-lanes = <1 2>;
+						data-lanes = <0 2>;
 						remote-endpoint = <&csiphy0_in>;
 					};
 				};
@@ -190,7 +190,7 @@
 
 				port {
 					gc02m2_out: endpoint {
-						data-lanes = <1>;
+						data-lanes = <0>;
 						remote-endpoint = <&csiphy1_in>;
 					};
 				};
@@ -277,7 +277,8 @@
 				reg = <0>;
 				csiphy0_in: endpoint {
 					bus-type = <4>;
-					data-lanes = <1 2>;
+					data-lanes = <0 2>;
+					qcom,lane-assign = <0x20>;
 					remote-endpoint = <&gc5035_out>;
 				};
 			};
@@ -286,7 +287,8 @@
 				reg = <1>;
 				csiphy1_in: endpoint {
 					bus-type = <4>;
-					data-lanes = <1>;
+					data-lanes = <0>;
+					qcom,lane-assign = <0x20>;
 					remote-endpoint = <&gc02m2_out>;
 				};
 			};

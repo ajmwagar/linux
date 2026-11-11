@@ -329,7 +329,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid0" },
 		.interrupt = { "csid0" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
@@ -354,7 +354,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid1" },
 		.interrupt = { "csid1" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
@@ -379,7 +379,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.reg = { "csid2" },
 		.interrupt = { "csid2" },
 		.csid = {
-			.hw_ops = &csid_ops_4_7,
+			.hw_ops = &csid_ops_3_4_3,
 			.parent_dev_ops = &vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
@@ -4688,6 +4688,7 @@ static int camss_parse_endpoint_node(struct device *dev,
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
 	unsigned int i;
+	u32 lane_assign;
 	int ret;
 
 	ret = v4l2_fwnode_endpoint_parse(ep, &vep);
@@ -4704,6 +4705,11 @@ static int camss_parse_endpoint_node(struct device *dev,
 	}
 
 	csd->interface.csiphy_id = vep.base.port;
+
+	if (!fwnode_property_read_u32(ep, "qcom,lane-assign", &lane_assign)) {
+		csd->lane_assign = lane_assign;
+		csd->lane_assign_valid = true;
+	}
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
 	lncfg->clk.pos = mipi_csi2->clock_lane;
@@ -5202,6 +5208,8 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct csiphy_device *csiphy = &camss->csiphy[id];
 
 	csiphy->cfg.csi2 = &csd->interface.csi2;
+	csiphy->lane_assign = csd->lane_assign;
+	csiphy->lane_assign_valid = csd->lane_assign_valid;
 	subdev->host_priv = csiphy;
 
 	return 0;
@@ -5598,17 +5606,50 @@ static const struct camss_resources msm8939_resources = {
 	.vfe_num = ARRAY_SIZE(vfe_res_8x39),
 };
 
+static const struct camss_subdev_resources csiphy_res_8x53[] = {
+	/* CSIPHY0 */
+	{
+		.clock = { "top_ahb", "ispif_ahb", "ahb", "csiphy0_timer",
+			   "csi0_phy" },
+		.clock_rate = { { 0 }, { 0 }, { 0 },
+				{ 100000000, 200000000, 266666667 }, { 0 } },
+		.reg = { "csiphy0", "csiphy0_clk_mux" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_3_4_2,
+			.formats = &csiphy_formats_8x96
+		}
+	},
+	/* CSIPHY1 */
+	{
+		.clock = { "top_ahb", "ispif_ahb", "ahb", "csiphy1_timer",
+			   "csi1_phy" },
+		.clock_rate = { { 0 }, { 0 }, { 0 },
+				{ 100000000, 200000000, 266666667 }, { 0 } },
+		.reg = { "csiphy1", "csiphy1_clk_mux" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_3_4_2,
+			.formats = &csiphy_formats_8x96
+		}
+	},
+};
+
 static const struct camss_resources msm8953_resources = {
 	.version = CAMSS_8x53,
 	.icc_res = icc_res_8x53,
 	.icc_path_num = ARRAY_SIZE(icc_res_8x53),
-	.csiphy_res = csiphy_res_8x96,
+	.csiphy_res = csiphy_res_8x53,
 	.csid_res = csid_res_8x53,
 	.ispif_res = &ispif_res_8x53,
 	.vfe_res = vfe_res_8x53,
-	.csiphy_num = ARRAY_SIZE(csiphy_res_8x96),
+	/* CAT S22 / QM215 has only CSIPHY0 and CSIPHY1 wired. */
+	.csiphy_num = 2,
 	.csid_num = ARRAY_SIZE(csid_res_8x53),
-	.vfe_num = ARRAY_SIZE(vfe_res_8x53),
+	/* CAT S22 / QM215 has only VFE0. */
+	.vfe_num = 1,
 };
 
 static const struct camss_resources msm8996_resources = {

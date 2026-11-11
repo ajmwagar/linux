@@ -21,6 +21,64 @@ struct vadc_map_pt {
 	s32 y;
 };
 
+/*
+ * Voltage to temperature table for the QRD215 battery thermistor.  This is
+ * the table used by the stock QM215 charger configuration (scale-function 26).
+ */
+static const struct vadc_map_pt adcmap_batt_therm_qrd_215[] = {
+	{1575,  -20000},
+	{1549,  -18000},
+	{1522,  -16000},
+	{1493,  -14000},
+	{1463,  -12000},
+	{1431,  -10000},
+	{1398,  -8000},
+	{1364,  -6000},
+	{1329,  -4000},
+	{1294,  -2000},
+	{1258,  0},
+	{1222,  2000},
+	{1187,  4000},
+	{1151,  6000},
+	{1116,  8000},
+	{1082,  10000},
+	{1049,  12000},
+	{1016,  14000},
+	{985,   16000},
+	{955,   18000},
+	{926,   20000},
+	{899,   22000},
+	{873,   24000},
+	{849,   26000},
+	{825,   28000},
+	{804,   30000},
+	{783,   32000},
+	{764,   34000},
+	{746,   36000},
+	{729,   38000},
+	{714,   40000},
+	{699,   42000},
+	{686,   44000},
+	{673,   46000},
+	{662,   48000},
+	{651,   50000},
+	{641,   52000},
+	{632,   54000},
+	{623,   56000},
+	{615,   58000},
+	{608,   60000},
+	{601,   62000},
+	{595,   64000},
+	{589,   66000},
+	{583,   68000},
+	{578,   70000},
+	{574,   72000},
+	{569,   74000},
+	{565,   76000},
+	{562,   78000},
+	{558,   80000}
+};
+
 /* Voltage to temperature */
 static const struct vadc_map_pt adcmap_100k_104ef_104fb[] = {
 	{1758,	-40000 },
@@ -422,9 +480,11 @@ static int qcom_vadc_scale_volt(const struct vadc_linear_graph *calib_graph,
 }
 
 static int qcom_vadc_scale_therm(const struct vadc_linear_graph *calib_graph,
-				 const struct u32_fract *prescale,
-				 bool absolute, u16 adc_code,
-				 int *result_mdec)
+				     const struct u32_fract *prescale,
+				     bool absolute, u16 adc_code,
+				     int *result_mdec,
+				     const struct vadc_map_pt *table,
+				     u32 table_size)
 {
 	s64 voltage = 0;
 	int ret;
@@ -434,9 +494,8 @@ static int qcom_vadc_scale_therm(const struct vadc_linear_graph *calib_graph,
 	if (absolute)
 		voltage = div64_s64(voltage, 1000);
 
-	ret = qcom_vadc_map_voltage_temp(adcmap_100k_104ef_104fb,
-					 ARRAY_SIZE(adcmap_100k_104ef_104fb),
-					 voltage, result_mdec);
+	ret = qcom_vadc_map_voltage_temp(table, table_size, voltage,
+					 result_mdec);
 	if (ret)
 		return ret;
 
@@ -648,8 +707,14 @@ int qcom_vadc_scale(enum vadc_scale_fn_type scaletype,
 	case SCALE_THERM_100K_PULLUP:
 	case SCALE_XOTHERM:
 		return qcom_vadc_scale_therm(calib_graph, prescale,
-					     absolute, adc_code,
-					     result);
+					     absolute, adc_code, result,
+					     adcmap_100k_104ef_104fb,
+					     ARRAY_SIZE(adcmap_100k_104ef_104fb));
+	case SCALE_BATT_THERM_QRD_215:
+		return qcom_vadc_scale_therm(calib_graph, prescale,
+					     absolute, adc_code, result,
+					     adcmap_batt_therm_qrd_215,
+					     ARRAY_SIZE(adcmap_batt_therm_qrd_215));
 	case SCALE_PMIC_THERM:
 		return qcom_vadc_scale_die_temp(calib_graph, prescale,
 						absolute, adc_code,

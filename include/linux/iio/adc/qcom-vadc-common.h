@@ -109,6 +109,7 @@ struct vadc_linear_graph {
 enum vadc_scale_fn_type {
 	SCALE_DEFAULT = 0,
 	SCALE_THERM_100K_PULLUP,
+	SCALE_BATT_THERM_QRD_215,
 	SCALE_PMIC_THERM,
 	SCALE_XOTHERM,
 	SCALE_PMI_CHG_TEMP,

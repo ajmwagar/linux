@@ -756,6 +756,17 @@ config BATTERY_PM8916_BMS_VM
 	  To compile this driver as module, choose M here: the
 	  module will be called pm8916_bms_vm.
 
+config SMB1360_FG
+	tristate "SMB1360 read-only fuel gauge"
+	depends on I2C
+	help
+	  Read the SMB1360 fuel-gauge shadow registers for capacity,
+	  voltage, current and temperature.  This is useful on boards
+	  where the bootloader leaves the SMB1360 running as the fuel
+	  gauge but Linux has no write-capable charger driver.  This
+	  driver never writes charger configuration.
+
+
 config CHARGER_PM8916_LBC
 	tristate "Qualcomm PM8916 Linear Battery Charger support"
 	depends on MFD_SPMI_PMIC || COMPILE_TEST

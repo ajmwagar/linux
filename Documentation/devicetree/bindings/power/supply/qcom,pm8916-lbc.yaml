@@ -78,6 +78,34 @@ properties:
 
   monitored-battery: true
 
+  qcom,battery-temperature-psy:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      Name of the power supply that reports battery temperature in
+      decidegrees Celsius. When present, the charger limits current in
+      the warm range and stops charging in the hot range.
+
+  qcom,thermal-warm-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 1000
+    default: 450
+    description: Battery temperature at which charging is limited to 90 mA.
+
+  qcom,thermal-hot-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 1000
+    default: 500
+    description: Battery temperature at which charging is stopped.
+
+  qcom,thermal-resume-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 1000
+    default: 400
+    description: Battery temperature at which normal charging resumes.
+
 required:
   - compatible
   - reg
@@ -121,6 +149,11 @@ examples:
                           "chg_gone",
                           "overtemp";
         monitored-battery = <&battery>;
+
+        qcom,battery-temperature-psy = "cat-s22-battery";
+        qcom,thermal-warm-decidegc = <450>;
+        qcom,thermal-hot-decidegc = <500>;
+        qcom,thermal-resume-decidegc = <400>;
 
         qcom,fast-charge-safe-current = <900000>;
         qcom,fast-charge-safe-voltage = <4300000>;

@@ -116,6 +116,9 @@ MODULE_PARM_DESC(force_dgain, "Force digital gain 0xb1/0xb2 (-1 = leave alone)")
 #define GC5035_VTS_MAX			0x1fff
 
 #define GC5035_REG_AGAIN		0xb6
+
+/* cat-s22: the coarse gain register that responds on this part */
+#define GC5035_REG_GAIN_COARSE		0xb0
 #define GC5035_REG_DGAIN_INT		0xb1
 #define GC5035_REG_DGAIN_FRAC		0xb2
 #define GC5035_GAIN_MIN			64
@@ -235,7 +238,8 @@ struct gc5035 {
 	const char		*module_facing;
 	const char		*module_name;
 	const char		*len_name;
-	u32 Dgain_ratio;
+	u32			cur_exposure;
+	u32			cur_gain;
 	struct gc5035_otp_info *otp;
 	struct rkmodule_inf	module_inf;
 	struct rkmodule_awb_cfg	awb_cfg;
@@ -1075,57 +1079,67 @@ static const char * const gc5035_test_pattern_menu[] = {
 	"Vertical Color Bar Type 4"
 };
 
+/*
+ * The vendor library sends one page-0 bundle per AE update: page select,
+ * shutter, frame length, then gain.  Writing the shutter registers on their
+ * own does not take effect on this part - they keep reading back the power-on
+ * value whatever is written - so keep the bundle shape and always re-send the
+ * frame length together with the shutter.
+ */
+static void gc5035_gain_codes(u32 a_gain, u8 *coarse, u8 *fine)
+{
+	a_gain = clamp_val(a_gain, GC5035_GAIN_MIN, GC5035_GAIN_MAX);
+
+	/*
+	 * The mode-table defaults (0xb0 = 0x6e, 0xb2 = 0x00) are 1x.  Measured on
+	 * this sensor, 0xb0 = 0xff is about 2x and 0xb2 = 0xfc about 1.7x on top
+	 * of it.  0xb1 and 0xb6 do not change the output and stay at their table
+	 * defaults.
+	 */
+	*coarse = 0x6e + (a_gain - GC5035_GAIN_MIN) * (0xff - 0x6e) /
+		  (GC5035_GAIN_MAX - GC5035_GAIN_MIN);
+	*fine = (a_gain - GC5035_GAIN_MIN) * 0xfc /
+		(GC5035_GAIN_MAX - GC5035_GAIN_MIN);
+}
+
+static int gc5035_write_ae(struct gc5035 *gc5035)
+{
+	struct regval ae[] = {
+		{GC5035_REG_SET_PAGE, GC5035_SET_PAGE_ONE},
+		{GC5035_REG_EXPOSURE_H, 0},
+		{GC5035_REG_EXPOSURE_L, 0},
+		{GC5035_REG_VTS_H, 0},
+		{GC5035_REG_VTS_L, 0},
+		{GC5035_REG_GAIN_COARSE, 0},
+		{GC5035_REG_DGAIN_INT, 0x01},
+		{GC5035_REG_DGAIN_FRAC, 0},
+		{REG_NULL, 0},
+	};
+	u8 coarse, fine;
+
+	gc5035_gain_codes(gc5035->cur_gain, &coarse, &fine);
+
+	/* The part ignores the two low bits of shutter and frame length */
+	ae[1].val = (gc5035->cur_exposure >> 8) & 0x3f;
+	ae[2].val = gc5035->cur_exposure & 0xfc;
+	ae[3].val = (gc5035->cur_vts >> 8) & 0x3f;
+	ae[4].val = gc5035->cur_vts & 0xfc;
+	ae[5].val = coarse;
+	ae[7].val = fine;
+
+	return gc5035_write_array(gc5035->client, ae);
+}
+
 static int gc5035_set_exposure_reg(struct gc5035 *gc5035, u32 exposure)
 {
-	u32 caltime = 0;
-	int ret = 0;
-
-	caltime = exposure / 2;
-	caltime = caltime * 2;
-	gc5035->Dgain_ratio = 64 * exposure / caltime;
-	ret = gc5035_write_reg(gc5035->client,
-		GC5035_REG_SET_PAGE,
-		GC5035_SET_PAGE_ONE);
-
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_EXPOSURE_H,
-		(caltime >> 8) & 0x3F);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_EXPOSURE_L,
-		caltime & 0xFF);
-
-	return ret;
+	gc5035->cur_exposure = max_t(u32, exposure, GC5035_EXPOSURE_MIN);
+	return gc5035_write_ae(gc5035);
 }
 
 static int gc5035_set_gain_reg(struct gc5035 *gc5035, u32 a_gain)
 {
-	struct i2c_client *client = gc5035->client;
-	u32 coarse, fine;
-	int ret;
-
-	a_gain = clamp_val(a_gain, GC5035_GAIN_MIN, GC5035_GAIN_MAX);
-
-	/*
-	 * cat-s22: on this GC5035 the coarse gain is 0xb0 and the fine gain
-	 * is 0xb2.  The mode-table defaults (0x6e, 0x00) are 1x; measured on
-	 * hardware 0xb0=0xff is about 2x and 0xb2=0xfc about 1.7x on top of
-	 * that.  0xb1 and 0xb6 do not change the output and stay at their
-	 * table defaults.
-	 */
-	coarse = 0x6e + (a_gain - GC5035_GAIN_MIN) * (0xff - 0x6e) /
-		 (GC5035_GAIN_MAX - GC5035_GAIN_MIN);
-	fine = (a_gain - GC5035_GAIN_MIN) * 0xfc /
-	       (GC5035_GAIN_MAX - GC5035_GAIN_MIN);
-
-	dev_dbg(&client->dev, "gain %u: coarse=0x%02x fine=0x%02x\n",
-		a_gain, coarse, fine);
-
-	ret = gc5035_write_reg(client, GC5035_REG_SET_PAGE,
-			       GC5035_SET_PAGE_ONE);
-	ret |= gc5035_write_reg(client, 0xb0, coarse);
-	ret |= gc5035_write_reg(client, 0xb1, 0x01);
-	ret |= gc5035_write_reg(client, 0xb2, fine);
-	return ret;
+	gc5035->cur_gain = a_gain;
+	return gc5035_write_ae(gc5035);
 }
 
 static void gc5035_modify_fps_info(struct gc5035 *gc5035)
@@ -1168,16 +1182,8 @@ static int gc5035_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = gc5035_set_gain_reg(gc5035, ctrl->val);
 		break;
 	case V4L2_CID_VBLANK:
-		ret = gc5035_write_reg(gc5035->client,
-			GC5035_REG_SET_PAGE,
-			GC5035_SET_PAGE_ONE);
-		ret |= gc5035_write_reg(gc5035->client,
-			GC5035_REG_VTS_H,
-			((ctrl->val + gc5035->cur_mode->height) >> 8) & 0xff);
-		ret |= gc5035_write_reg(gc5035->client,
-			GC5035_REG_VTS_L,
-			(ctrl->val + gc5035->cur_mode->height) & 0xff);
 		gc5035->cur_vts = ctrl->val + gc5035->cur_mode->height;
+		ret = gc5035_write_ae(gc5035);
 		gc5035_modify_fps_info(gc5035);
 		break;
 	case V4L2_CID_TEST_PATTERN:
@@ -1209,6 +1215,9 @@ static int gc5035_initialize_controls(struct gc5035 *gc5035)
 
 	handler = &gc5035->ctrl_handler;
 	mode = gc5035->cur_mode;
+	gc5035->cur_vts = mode->vts_def;
+	gc5035->cur_exposure = mode->exp_def;
+	gc5035->cur_gain = GC5035_GAIN_DEFAULT;
 	ret = v4l2_ctrl_handler_init(handler, 8);
 	if (ret)
 		return ret;

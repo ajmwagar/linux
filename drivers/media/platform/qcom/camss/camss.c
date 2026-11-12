@@ -37,6 +37,7 @@
 #define CAMSS_HW_VERSION		0x0
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
+static const struct parent_dev_ops cat_vfe_parent_dev_ops;
 
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
@@ -330,7 +331,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid0" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -355,7 +356,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid1" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -380,7 +381,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid2" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -4668,6 +4669,35 @@ static void __iomem
 static const struct parent_dev_ops vfe_parent_dev_ops = {
 	.get = vfe_parent_dev_ops_get,
 	.put = vfe_parent_dev_ops_put,
+	.get_base_address = vfe_parent_dev_ops_get_base_address
+};
+
+/*
+ * CAT S22 / QM215 has a single VFE.  CSID0, CSID1 and CSID2 all reach VFE0
+ * through the ISPIF, so every CSID's parent is VFE0.  The generic
+ * vfe_parent_dev_ops maps CSID<n> to VFE<n> and rejects CSID1/CSID2 when the
+ * board has no VFE1.
+ */
+static int cat_vfe_parent_dev_ops_get(struct camss *camss, int id)
+{
+	if (!camss->res->vfe_num)
+		return -EINVAL;
+
+	return vfe_get(&camss->vfe[0]);
+}
+
+static int cat_vfe_parent_dev_ops_put(struct camss *camss, int id)
+{
+	if (!camss->res->vfe_num)
+		return -EINVAL;
+
+	vfe_put(&camss->vfe[0]);
+	return 0;
+}
+
+static const struct parent_dev_ops cat_vfe_parent_dev_ops = {
+	.get = cat_vfe_parent_dev_ops_get,
+	.put = cat_vfe_parent_dev_ops_put,
 	.get_base_address = vfe_parent_dev_ops_get_base_address
 };
 

@@ -647,11 +647,21 @@ static int __maybe_unused cci_resume_runtime(struct device *dev)
 	struct cci *cci = dev_get_drvdata(dev);
 	int ret;
 
+	ret = cci_set_core_rate(cci);
+	if (ret)
+		return ret;
+
 	ret = cci_enable_clocks(cci);
 	if (ret)
 		return ret;
 
-	return cci_init(cci);
+	ret = cci_reset(cci);
+	if (ret) {
+		cci_disable_clocks(cci);
+		return ret;
+	}
+
+	return 0;
 }
 
 static const struct dev_pm_ops qcom_cci_pm = {
@@ -753,14 +763,6 @@ static int cci_probe(struct platform_device *pdev)
 	if (ret && ret != -ENODEV)
 		return dev_err_probe(dev, ret, "failed to add OPP table\n");
 
-	ret = cci_set_core_rate(cci);
-	if (ret)
-		return ret;
-
-	ret = cci_enable_clocks(cci);
-	if (ret < 0)
-		return ret;
-
 	/* Interrupt */
 
 	ret = platform_get_irq(pdev, 0);
@@ -774,18 +776,12 @@ static int cci_probe(struct platform_device *pdev)
 		goto disable_clocks;
 	}
 
-	val = readl(cci->base + CCI_HW_VERSION);
-	dev_dbg(dev, "CCI HW version = 0x%08x", val);
-
-	ret = cci_reset(cci);
-	if (ret < 0)
-		goto disable_clocks;
-
 	pm_runtime_set_autosuspend_delay(dev, MSEC_PER_SEC);
 	ret = devm_pm_runtime_set_active_enabled(dev);
 	if (ret)
 		goto disable_clocks;
 
+	pm_runtime_set_suspended(dev);
 	pm_runtime_use_autosuspend(dev);
 
 	for (i = 0; i < cci->data->num_masters; i++) {

@@ -7,6 +7,7 @@
 
 #include <linux/module.h>
 #include <linux/qrtr.h>
+#include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
 
@@ -126,18 +127,46 @@ static int server_match(const struct qrtr_server *srv,
 	return (srv->instance & ifilter) == f->instance;
 }
 
+/*
+ * Send a namespace control packet to @dest.
+ *
+ * A peer rejects everything but HELLO with -EAGAIN until the core has sent our
+ * HELLO to it (see qrtr_node_enqueue()), and the announcements below are sent
+ * from the receive path of the peer's own HELLO, i.e. before that handshake
+ * can complete. Losing one of them is not recoverable for the peer: without
+ * the NEW_SERVER it never learns that this node offers the service it is
+ * looking for. Retry for a moment instead of dropping the packet.
+ */
+static int qrtr_ctrl_send(struct sockaddr_qrtr *dest, struct qrtr_ctrl_pkt *pkt)
+{
+	struct msghdr msg = { };
+	struct kvec iv;
+	int ret = -EAGAIN;
+	int i;
+
+	iv.iov_base = pkt;
+	iv.iov_len = sizeof(*pkt);
+
+	msg.msg_name = (struct sockaddr *)dest;
+	msg.msg_namelen = sizeof(*dest);
+
+	for (i = 0; i < 100; i++) {
+		ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(*pkt));
+		if (ret != -EAGAIN)
+			break;
+		usleep_range(10000, 15000);
+	}
+
+	return ret;
+}
+
 static int service_announce_new(struct sockaddr_qrtr *dest,
 				struct qrtr_server *srv)
 {
 	struct qrtr_ctrl_pkt pkt;
-	struct msghdr msg = { };
-	struct kvec iv;
 
 	trace_qrtr_ns_service_announce_new(srv->service, srv->instance,
 					   srv->node, srv->port);
-
-	iv.iov_base = &pkt;
-	iv.iov_len = sizeof(pkt);
 
 	memset(&pkt, 0, sizeof(pkt));
 	pkt.cmd = cpu_to_le32(QRTR_TYPE_NEW_SERVER);
@@ -146,10 +175,7 @@ static int service_announce_new(struct sockaddr_qrtr *dest,
 	pkt.server.node = cpu_to_le32(srv->node);
 	pkt.server.port = cpu_to_le32(srv->port);
 
-	msg.msg_name = (struct sockaddr *)dest;
-	msg.msg_namelen = sizeof(*dest);
-
-	return kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
+	return qrtr_ctrl_send(dest, &pkt);
 }
 
 static void service_announce_del(struct sockaddr_qrtr *dest,
@@ -187,12 +213,7 @@ static void lookup_notify(struct sockaddr_qrtr *to, struct qrtr_server *srv,
 			  bool new)
 {
 	struct qrtr_ctrl_pkt pkt;
-	struct msghdr msg = { };
-	struct kvec iv;
 	int ret;
-
-	iv.iov_base = &pkt;
-	iv.iov_len = sizeof(pkt);
 
 	memset(&pkt, 0, sizeof(pkt));
 	pkt.cmd = new ? cpu_to_le32(QRTR_TYPE_NEW_SERVER) :
@@ -204,10 +225,7 @@ static void lookup_notify(struct sockaddr_qrtr *to, struct qrtr_server *srv,
 		pkt.server.port = cpu_to_le32(srv->port);
 	}
 
-	msg.msg_name = (struct sockaddr *)to;
-	msg.msg_namelen = sizeof(*to);
-
-	ret = kernel_sendmsg(qrtr_ns.sock, &msg, &iv, 1, sizeof(pkt));
+	ret = qrtr_ctrl_send(to, &pkt);
 	if (ret < 0 && ret != -ENODEV)
 		pr_err("failed to send lookup notification\n");
 }

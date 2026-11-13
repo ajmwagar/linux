@@ -2052,3 +2052,9 @@ config SM_VIDEOCC_8450
 	  Say Y if you want to support video devices and functionality such as
 	  video encode/decode.
 endif
+
+config QCOM_CPU_PLL_8939
+	tristate "Qualcomm MSM8937/QM215 APCS A53SS PLL clocks"
+	depends on COMMON_CLK_QCOM
+	help
+	  APCS C0/C1 SR2 PLL clocks for MSM8937/QM215.

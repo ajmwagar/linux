@@ -49,7 +49,9 @@ static u32 csid_lane_assign_3_4_3(u32 lane_assign, u8 lane_cnt)
 	u32 mapped = 0;
 	u8 i;
 
-	for (i = 0; i < lane_cnt; i++) {
+	/* Vendor maps all four data-lane nibbles, even inactive ones. */
+        (void)lane_cnt;
+        for (i = 0; i < 4; i++) {
 		u8 lane = (lane_assign >> (i * 4)) & 0xf;
 
 		if (lane >= ARRAY_SIZE(lane_map))

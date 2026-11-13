@@ -1171,7 +1171,15 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
 
-	val = 0x02;
+	/*
+	 * Downstream msm8937 CSIPHY 3.4.3 uses 0x6 for normal
+	 * single-sensor operation; 0x2 is the combo-mode value.
+	 * GC5035 is ComboMode=0, so use 0x6 on msm8953/8x53.
+	 */
+	if (csiphy->camss->res->version == CAMSS_8x53)
+		val = 0x06;
+	else
+		val = 0x02;
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
 

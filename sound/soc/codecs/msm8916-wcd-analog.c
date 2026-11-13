@@ -925,6 +925,24 @@ static void pm8916_wcd_analog_remove(struct snd_soc_component *component)
 				      priv->supplies);
 }
 
+static int pm8916_wcd_analog_mclk_event(struct snd_soc_dapm_widget *w,
+					 struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		snd_soc_component_update_bits(component, CDC_A_MASTER_BIAS_CTL, 0x30, 0x30);
+		snd_soc_component_update_bits(component, CDC_D_CDC_RST_CTL, 0x80, 0x80);
+		snd_soc_component_update_bits(component, CDC_D_CDC_TOP_CLK_CTL, 0x0c, 0x0c);
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		snd_soc_component_update_bits(component, CDC_D_CDC_TOP_CLK_CTL, 0x0c, 0x00);
+		break;
+	}
+	return 0;
+}
+
 static const struct snd_soc_dapm_route pm8916_wcd_analog_audio_map[] = {
 
 	{"PDM_RX1", NULL, "PDM Playback"},
@@ -1133,7 +1151,9 @@ static const struct snd_soc_dapm_widget pm8916_wcd_analog_dapm_widgets[] = {
 			    0),
 
 	/* System Clock source */
-	SND_SOC_DAPM_SUPPLY("A_MCLK", CDC_D_CDC_TOP_CLK_CTL, 2, 0, NULL, 0),
+	SND_SOC_DAPM_SUPPLY("A_MCLK", CDC_D_CDC_TOP_CLK_CTL, 2, 0,
+		pm8916_wcd_analog_mclk_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	/* TX ADC and RX DAC Clock source. */
 	SND_SOC_DAPM_SUPPLY("A_MCLK2", CDC_D_CDC_TOP_CLK_CTL, 3, 0, NULL, 0),
 };

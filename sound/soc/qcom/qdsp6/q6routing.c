@@ -393,7 +393,7 @@ static struct msm_routing_data *routing_data;
 int q6routing_stream_open(int fedai_id, int perf_mode,
 			   int stream_id, int stream_type)
 {
-	int j, topology, num_copps = 0;
+	int j, topology, num_copps = 0, ret = 0;
 	struct route_payload payload;
 	struct q6copp *copp;
 	int copp_idx;
@@ -446,12 +446,24 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
 	if (num_copps) {
 		payload.num_copps = num_copps;
 		payload.session_id = stream_id;
-		q6adm_matrix_map(routing_data->dev, session->path_type,
+		ret = q6adm_matrix_map(routing_data->dev, session->path_type,
 				 payload, perf_mode);
+		dev_info(routing_data->dev,
+			 "ADM map FE=%d session=%d path=%d port_index=%d copp_index=%d rate=%d channels=%d bits=%d ret=%d\n",
+			 fedai_id, stream_id, session->path_type, session->port_id,
+			 copp_idx, session->sample_rate, session->channels,
+			 session->bits_per_sample, ret);
+		if (ret < 0) {
+			for_each_set_bit(j, &session->copp_map, MAX_COPPS_PER_PORT) {
+				q6adm_close(routing_data->dev, session->copps[j]);
+				session->copps[j] = NULL;
+			}
+			session->copp_map = 0;
+		}
 	}
 	mutex_unlock(&routing_data->lock);
 
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 EXPORT_SYMBOL_GPL(q6routing_stream_open);
 

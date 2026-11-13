@@ -134,9 +134,10 @@ static int cat_capture_startup(struct snd_pcm_substream *s)
 		return -EINVAL;
 	if (t->capture_running)
 		return -EBUSY;
-	if (!snd_soc_dapm_get_pin_status(snd_soc_card_to_dapm(rtd->card),
-					"Handset Mic"))
-		return -EACCES;
+	/* The late probe disables the mic pin until userspace selects it.
+	 * DAPM cannot report the pin On until this backend powers the path,
+	 * so checking pin status here is circular and blocks every capture.
+	 */
 	val = readl(t->speaker_mux);
 	t->speaker_saved = val & BIT(16);
 	writel(val | BIT(16), t->speaker_mux);
@@ -199,10 +200,81 @@ static const struct snd_soc_ops cat_capture_ops = {
 	.shutdown = cat_capture_shutdown,
 };
 
+static const struct snd_soc_dapm_route cat_pdm_routes[] = {
+	{ "LPASS_PDM_TX", NULL, "PDM_TX" },
+};
+
+static const struct snd_pcm_hardware cat_pdm_hw = {
+	.info			= SNDRV_PCM_INFO_INTERLEAVED |
+				  SNDRV_PCM_INFO_BLOCK_TRANSFER,
+	.formats		= SNDRV_PCM_FMTBIT_S16_LE,
+	.rates			= SNDRV_PCM_RATE_48000,
+	.rate_min		= 48000,
+	.rate_max		= 48000,
+	.channels_min		= 1,
+	.channels_max		= 1,
+	.buffer_bytes_max	= 128 * 1024,
+	.period_bytes_min	= 4096,
+	.period_bytes_max	= 8192,
+	.periods_min		= 2,
+	.periods_max		= 128,
+};
+
+static int cat_pdm_startup(struct snd_pcm_substream *s)
+{
+	snd_soc_set_runtime_hwparams(s, &cat_pdm_hw);
+	return 0;
+}
+
+static const struct snd_soc_ops cat_pdm_ops = {
+	.startup = cat_pdm_startup,
+};
+
+static int cat_add_pdm_capture_link(struct snd_soc_card *card)
+{
+	struct snd_soc_dai_link *links, *link;
+	struct snd_soc_dai_link_component *codec;
+	struct device_node *np;
+	int ret;
+
+	np = of_parse_phandle(card->dev->of_node, "aux-devs", 0);
+	if (!np)
+		return -ENODEV;
+
+	links = devm_kcalloc(card->dev, card->num_links + 1,
+			     sizeof(*links), GFP_KERNEL);
+	codec = devm_kzalloc(card->dev, sizeof(*codec), GFP_KERNEL);
+	if (!links || !codec) {
+		of_node_put(np);
+		return -ENOMEM;
+	}
+	memcpy(links, card->dai_link, card->num_links * sizeof(*links));
+
+	link = &links[card->num_links];
+	codec->of_node = np;
+	codec->dai_name = "pm8916_wcd_analog_pdm_tx";
+	link->name = "PDM Capture";
+	link->stream_name = "PDM Capture";
+	link->cpus = &snd_soc_dummy_dlc;
+	link->num_cpus = 1;
+	link->codecs = codec;
+	link->num_codecs = 1;
+	link->platforms = &snd_soc_dummy_dlc;
+	link->num_platforms = 1;
+	link->nonatomic = 1;
+	link->ignore_suspend = 1;
+	link->ops = &cat_pdm_ops;
+
+	card->dai_link = links;
+	card->num_links++;
+	ret = 0;
+	return ret;
+}
+
 static int cat_capture_late_probe(struct snd_soc_card *card)
 {
 	static const char * const disabled[] = {
-		"Handset Mic", "AMIC2", "AMIC3", "EAR", "HPH_L", "HPH_R", "SPK_OUT",
+		"AMIC2", "AMIC3", "EAR", "HPH_L", "HPH_R", "SPK_OUT",
 	};
 	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
 	int i, ret;
@@ -214,6 +286,54 @@ static int cat_capture_late_probe(struct snd_soc_card *card)
 		ret = snd_soc_dapm_disable_pin(dapm, disabled[i]);
 		if (ret)
 			return ret;
+	}
+	ret = snd_soc_dapm_add_routes(dapm, cat_pdm_routes,
+				      ARRAY_SIZE(cat_pdm_routes));
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "PDM Capture");
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "PDM_TX");
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "ADC1");
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "Handset Mic");
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "MIC BIAS External1");
+	if (ret)
+		return ret;
+	ret = snd_soc_dapm_force_enable_pin(dapm, "AMIC1");
+	if (ret)
+		return ret;
+	{
+		struct snd_soc_component *c;
+		unsigned int v50 = 0xffff, v160 = 0xffff, v141 = 0xffff, v163 = 0xffff;
+
+		for_each_card_components(card, c) {
+			if (!c->name || !strstr(c->name, "audio-codec@f000"))
+				continue;
+			snd_soc_component_update_bits(c, 0xf048, 0x0c, 0x0c);
+			snd_soc_component_update_bits(c, 0xf049, 0x20, 0x20);
+			snd_soc_component_update_bits(c, 0xf04a, 0x10, 0x10);
+			snd_soc_component_update_bits(c, 0xf140, 0x80, 0x80);
+			snd_soc_component_write(c, 0xf143, 0x49);
+			snd_soc_component_update_bits(c, 0xf050, 0x3, 0x0);
+			snd_soc_component_update_bits(c, 0xf160, 0x80, 0x80);
+			v50 = snd_soc_component_read(c, 0xf050);
+			v160 = snd_soc_component_read(c, 0xf160);
+			v141 = snd_soc_component_read(c, 0xf141);
+			v163 = snd_soc_component_read(c, 0xf163);
+			dev_info(card->dev, "ANALOG f048=%02x f049=%02x f04a=%02x\n",
+				 snd_soc_component_read(c, 0xf048),
+				 snd_soc_component_read(c, 0xf049),
+				 snd_soc_component_read(c, 0xf04a));
+		}
+		dev_info(card->dev, "ANALOG f050=%02x f160=%02x f141=%02x f163=%02x\n",
+			 v50, v160, v141, v163);
 	}
 	return snd_soc_dapm_sync(dapm);
 }
@@ -244,6 +364,9 @@ static int cat_card_probe(struct platform_device *pdev)
 			card->dai_link[j] = card->dai_link[j - 1];
 		card->dai_link[j] = link;
 	}
+	ret = cat_add_pdm_capture_link(card);
+	if (ret)
+		return ret;
 	t = devm_kzalloc(&pdev->dev, sizeof(*t), GFP_KERNEL);
 	if (!t)
 		return -ENOMEM;
@@ -257,7 +380,7 @@ static int cat_card_probe(struct platform_device *pdev)
 		if (IS_ERR(t->speaker_mux))
 			return PTR_ERR(t->speaker_mux);
 		for (i = 0; i < card->num_links; i++) {
-			if (!card->dai_link[i].no_pcm || !card->dai_link[i].name ||
+			if (!card->dai_link[i].name ||
 			    strcmp(card->dai_link[i].name, "TERT_MI2S_TX"))
 				continue;
 			card->dai_link[i].ops = &cat_capture_ops;

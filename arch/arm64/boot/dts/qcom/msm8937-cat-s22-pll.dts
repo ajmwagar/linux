@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+#include "msm8937-cat-s22-camera-off-nopinctrl.dts"
+
+&soc {
+	cpu_pll: clock-controller@b116000 {
+		compatible = "qcom,cpu-pll-8939";
+		reg = <0xb116000 0x40>, <0xb016000 0x40>;
+		reg-names = "c0", "c1";
+		clocks = <&xo_board>;
+		clock-names = "xo";
+		#clock-cells = <1>;
+	};
+};

@@ -1,0 +1,640 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+/*
+ * CAT S22 Flip (S22_FLIP / S22FLIP) - MSM8937 / PM8916
+ *
+ * SKELETON. Every property below either (a) comes from the device's own
+ * vendor DTBO, (b) comes from an upstream reference board, or (c) is marked
+ * ASSUMED. Big comment blocks explain what could NOT be justified yet; see
+ * docs/mainline-cat-plan.md for the work items.
+ *
+ * Evidence index (all paths relative to cat-s22/):
+ *   [DTBO]  out/board.dts           decompile of out/11_id00000000_rev0.dtb,
+ *                                   the split vendor DTBO overlay.
+ *   [HW]    docs/hardware-findings.md
+ *   [SYS]   out/20261025T214920/sys/switch.txt
+ *   [INP]   out/20261025T214920/input/device-names.txt
+ *   [DSP]   out/20261025T214920/dumpsys/display.txt
+ *
+ * PMIC: PM8916. Not an assumption - see the "PM8916" section below.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/arm/qcom,ids.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+#include "msm8937.dtsi"
+#include "pm8916.dtsi"
+
+/ {
+	model = "CAT S22 Flip";
+	compatible = "cat,s22flip", "qcom,msm8937";
+	chassis-type = "handset";
+
+	/* [DTBO] out/board.dts header: qcom,board-id = <0x0b 0x05>;
+	 * [HW] fingerprint Cat/S22FLIP/S22FLIP:11/... ; SoC msm8937.
+	 */
+	qcom,msm-id = <QCOM_ID_MSM8937 0x0>;
+	qcom,board-id = <0x0b 0x05>;
+
+	aliases {
+		mmc0 = &sdhc_1;
+		mmc1 = &sdhc_2;
+		serial0 = &blsp1_uart2;
+	};
+
+	chosen {
+		/* [DTBO] fragment@0 enables blsp1_uart2 for the console. */
+		stdout-path = &blsp1_uart2;
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Lid / hall switch.
+	 *
+	 * Vendor description [DTBO] fragment@7:
+	 *   hall { compatible = "hall-switch";
+	 *          interrupts = <0x2c 0x2003>;            GPIO 44, EDGE_BOTH
+	 *          linux,gpio-int = <&tlmm 0x2c 0x01>;    GPIO 44, active high
+	 *          linux,wakeup; vddio-supply = <&pm8916_l5>; }
+	 * Confirmed live: [HW] section 2 - /proc/interrupts "msmgpio 44 Edge",
+	 * /sys/class/switch_hall/hall_switch/state is 1 when the lid is open.
+	 *
+	 * There is no "hall-switch" driver upstream, so the same electrical
+	 * fact is expressed with gpio-keys as an EV_SW/SW_LID input, which is
+	 * the standard mainline lid-switch binding. NOTE: on the *vendor*
+	 * kernel this input device never emitted an event ([HW] section 2);
+	 * that is a vendor-driver bug, not a DT property, and it is what the
+	 * mainline port fixes.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_default>;
+
+		lid-switch {
+			label = "Lid";
+			gpios = <&tlmm 44 GPIO_ACTIVE_HIGH>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			wakeup-source;
+			/* Vendor had no debounce property; one interrupt per
+			 * transition was measured with no storms ([HW] s.2), so
+			 * a conservative 15 ms matches the volume key below.
+			 */
+			debounce-interval = <15>;
+		};
+
+		/* [DTBO] fragment@7 gpio_keys/vol_up:
+		 *   gpios = <&tlmm 0x5b 0x01>  -> GPIO 91, ACTIVE_LOW
+		 *   linux,code = <0x73>        -> KEY_VOLUMEUP (115)
+		 *   debounce-interval = <0x0f>
+		 *   linux,can-disable + gpio-key,wakeup
+		 */
+		key-volup {
+			label = "Volume Up";
+			gpios = <&tlmm 91 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+			wakeup-source;
+			linux,can-disable;
+		};
+	};
+
+	/*
+	 * Outer (sub) display backlight: [DTBO] mdss_spi has
+	 *   qcom,mdss-spi-blk-gpio = <&tlmm 0x0c 0>;   GPIO 12
+	 *   qcom,mdss-spi-bl-pmic-control-type = "bl_gpio_pulse";
+	 * The vendor driver pulses the GPIO to fake dimming. gpio-backlight is
+	 * the only upstream binding that fits a bare GPIO, so this node gives
+	 * on/off only - brightness levels are a known regression (see plan).
+	 */
+	backlight_sub: backlight {
+		compatible = "gpio-backlight";
+		gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+	};
+
+	/*
+	 * Physical keyboard: [DTBO] fragment@7 matrix_keypad.
+	 *   col-gpios: 0x60 0x63 0x5a 0x59 0x81 -> 96 99 90 89 129
+	 *   row-gpios: 0x7e 0x7f 0x2d 0x61 0x3e -> 126 127 45 97 62
+	 *   debounce-delay-ms = <3>, col-scan-delay-us = <5>, linux,wakeup
+	 * The driver exists upstream (drivers/input/keyboard/matrix_keypad.c,
+	 * "gpio-matrix-keypad") and uses the same property names, BUT the
+	 * vendor keymap blob cannot be trusted to use mainline's
+	 * KEY_ROW(r)<<24 | KEY_COL(c)<<16 | key encoding. No keymap is
+	 * written yet, hence status = "disabled".
+	 */
+	keypad {
+		compatible = "gpio-matrix-keypad";
+		debounce-delay-ms = <3>;
+		col-scan-delay-us = <5>;
+		wakeup-source;
+
+		col-gpios = <&tlmm 96 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 99 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 90 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 89 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 129 GPIO_ACTIVE_HIGH>;
+		row-gpios = <&tlmm 126 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 127 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 45 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 97 GPIO_ACTIVE_HIGH>,
+			    <&tlmm 62 GPIO_ACTIVE_HIGH>;
+
+		status = "disabled";
+	};
+};
+
+/*
+ * ==========================================================================
+ * PM8916
+ * ==========================================================================
+ * Evidence that the PMIC is PM8916 (NOT PM8950/PM8937/PMI8950):
+ *   [DTBO] every supply in the overlay is a pm8916_* phandle:
+ *          pm8916_l5 x9, pm8916_l6 x4, pm8916_l8, pm8916_l10, pm8916_l11,
+ *          pm8916_l12, pm8916_l16 x3, pm8916_l17 x5, pm8916_l16,
+ *          pm8916_chg, pm8916_bms, pm8916_vib, pm8916_gpios, pm8916_mpps.
+ *   [SYS]  "200f000.qcom,spmi:pm8916@0:qcom,charger" - live SPMI device
+ *          name from /sys/class/switch, i.e. PMIC USID 0 is pm8916.
+ *   kernel image carries the strings "qcom,pm8916", "qcom,pm8916-gpio",
+ *   "qcom,pm8916-mpp".
+ * The string "QRD + SMB1360" in the DTBO model name refers to the external
+ * charger IC (SMB1360, see below), not to the PMIC.
+ */
+&spmi_bus {
+	/* pm8916.dtsi brings in pm8916_0 (charger/LBC, BMS, RTC, MPPs, GPIOs,
+	 * temp-alarm, VADC) and pm8916_1 (PWM, vibrator, WCD codec).
+	 * Leave the charger/BMS disabled: see the charger note at the bottom.
+	 */
+};
+
+&rpm_requests {
+	/*
+	 * Rail set and voltages are taken verbatim from the upstream PM8916
+	 * reference design (arch/arm64/boot/dts/qcom/msm8916-pm8916.dtsi),
+	 * because that file includes msm8916.dtsi and cannot be #included
+	 * here. What the vendor DTBO *proves* for this board is which rail is
+	 * wired to what:
+	 *   l5  = 1.8 V  : hall vddio, touch vio, eMMC vqmmc
+	 *   l6  = 1.8 V  : SPI sub-panel vddio, camera vio
+	 *   l8  = 2.9 V  : eMMC vmmc            [DTBO frag@8 0x2c4020]
+	 *   l10 = 2.85 V : camera VAF            [DTBO 0x2b7cd0]
+	 *   l11 = 2.9 V  : SD vmmc               [DTBO frag@9 0x2d0370]
+	 *   l12 = 1.8-2.95 V : SD vqmmc          [DTBO frag@9]
+	 *   l16 = 2.8 V  : camera VANA           [DTBO 0x2ab980]
+	 *   l17 = 2.85 V : touch vdd, SPI panel vdd, DSI panel vdd? (see plan)
+	 */
+	pm8916_rpm_regulators: regulators {
+		compatible = "qcom,rpm-pm8916-regulators";
+		vdd_l1_l2_l3-supply = <&pm8916_s3>;
+		vdd_l4_l5_l6-supply = <&pm8916_s4>;
+		vdd_l7-supply = <&pm8916_s4>;
+
+		/* pm8916_s1 is managed by rpmpd (VDDCX) */
+		pm8916_s3: s3 {
+			regulator-min-microvolt = <1250000>;
+			regulator-max-microvolt = <1350000>;
+			regulator-always-on; /* needed for L2 */
+		};
+
+		pm8916_s4: s4 {
+			regulator-min-microvolt = <1850000>;
+			regulator-max-microvolt = <2150000>;
+			regulator-always-on; /* needed for L5/L7 */
+		};
+
+		l1 {};
+
+		pm8916_l2: l2 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-always-on; /* LPDDR */
+		};
+
+		/* l3 is managed by rpmpd (VDDMX) */
+		l4 {};
+
+		pm8916_l5: l5 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on; /* most digital I/O */
+		};
+
+		pm8916_l6: l6 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		pm8916_l7: l7 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on; /* CPU PLL */
+		};
+
+		pm8916_l8: l8 {
+			regulator-min-microvolt = <2900000>;
+			regulator-max-microvolt = <2900000>;
+		};
+
+		pm8916_l9: l9 {
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		pm8916_l10: l10 {
+			regulator-min-microvolt = <2850000>;
+			regulator-max-microvolt = <2850000>;
+		};
+
+		pm8916_l11: l11 {
+			regulator-min-microvolt = <2900000>;
+			regulator-max-microvolt = <2900000>;
+			regulator-allow-set-load;
+			regulator-system-load = <200000>;
+		};
+
+		pm8916_l12: l12 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2950000>;
+		};
+
+		pm8916_l16: l16 {
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+
+		pm8916_l17: l17 {
+			regulator-min-microvolt = <2850000>;
+			regulator-max-microvolt = <2850000>;
+			regulator-allow-set-load;
+		};
+	};
+};
+
+/* [DTBO] fragment@0: console UART. */
+&blsp1_uart2 {
+	status = "okay";
+};
+
+/*
+ * eMMC. [DTBO] fragment@8: vdd = pm8916_l8 @ 2.9 V, vdd-io = pm8916_l5,
+ * "qcom,nonremovable", HS400. Mainline only needs the supplies; the
+ * speed modes are negotiated by the sdhci-msm driver.
+ */
+&sdhc_1 {
+	status = "okay";
+
+	vmmc-supply = <&pm8916_l8>;
+	vqmmc-supply = <&pm8916_l5>;
+};
+
+/*
+ * microSD. [DTBO] fragment@9: vdd = pm8916_l11 @ 2.95 V,
+ * vdd-io = pm8916_l12 (1.8-2.95 V), cd-gpios = <&tlmm 0x43 0> -> GPIO 67.
+ */
+&sdhc_2 {
+	status = "okay";
+
+	vmmc-supply = <&pm8916_l11>;
+	vqmmc-supply = <&pm8916_l12>;
+	cd-gpios = <&tlmm 67 GPIO_ACTIVE_HIGH>;
+};
+
+/*
+ * ==========================================================================
+ * Main display (inner panel): MIPI DSI0, ST7701S, 480x640
+ * ==========================================================================
+ * [DTBO] fragment@41 (the overlay that actually picks the primary panel):
+ *     qcom,dsi-pref-prim-pan = <&dsi_st7701s_vga_video>;
+ *     qcom,platform-te-gpio    = <&tlmm 0x18 0>;   GPIO 24
+ *     qcom,platform-reset-gpio = <&tlmm 0x3c 0>;   GPIO 60
+ * [DSP]  Built-in Screen 480x640 @ 60 fps.
+ * [DTBO] dsi_st7701s_vga_video: 2 data lanes, 24 bpp, VGA 0x1e0 x 0x280,
+ *     hfp 0xa0 hbp 0x3c hpw 0x14, vbp 0x52 vfp 0x2c vpw 0x04,
+ *     reset sequence <1 120 0 120 1 120>, backlight = PM8916 MPP4 PWM.
+ *
+ * MISSING: there is no upstream binding/driver for a *DSI* ST7701S module.
+ * panel-sitronix-st7701.c upstream is the same controller family and already
+ * has a 480x640 2-lane DSI descriptor ("densitron,dmt028vghmcmi-1a"), so the
+ * cheapest correct path is to add a board panel descriptor there with the
+ * timings/init sequence above. Do NOT point this DT at an unrelated
+ * compatible - it would program the wrong GIP/voltage tables into the panel.
+ *
+ * The node below is therefore intentionally commented out. Uncomment once
+ * the descriptor exists (see docs/mainline-cat-plan.md, item D1).
+ *
+ * &mdss_dsi0 {
+ *	#address-cells = <1>;
+ *	#size-cells = <0>;
+ *
+ *	panel@0 {
+ *		compatible = "sitronix,st7701s";   // proposed, not upstream
+ *		reg = <0>;
+ *		reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
+ *		vdd-supply = <&pm8916_l17>;        // 2.85 V, see plan
+ *		backlight = <&pm8916_pwm>;         // MPP4 PWM
+ *
+ *		port {
+ *			panel_in: endpoint {
+ *				remote-endpoint = <&mdss_dsi0_out>;
+ *			};
+ *		};
+ *	};
+ * };
+ */
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	status = "okay";
+
+	/* ASSUMED: msm8937.dtsi carries no supplies for dsi0/phy. These are
+	 * the reference-design rails from msm8916-pm8916.dtsi. The vendor
+	 * DTBO does not show them (they live in the base DTB, which we do not
+	 * have). Verify on hardware / with a vendor dmesg before relying on
+	 * them.
+	 */
+	vdda-supply = <&pm8916_l2>;
+	vddio-supply = <&pm8916_l6>;
+};
+
+&mdss_dsi0_phy {
+	status = "okay";
+	vddio-supply = <&pm8916_l6>;	/* ASSUMED, see above */
+};
+
+/*
+ * ==========================================================================
+ * Outer display (sub-screen): SPI, ST7789V2, 128x128
+ * ==========================================================================
+ * [DTBO] fragment@7 qcom,mdss_spi:
+ *   vdd-supply = <&pm8916_l17>;           2.85 V
+ *   vddio-supply = <&pm8916_l6>;          1.8 V
+ *   te-gpio = <&tlmm 0x7c>, reset-gpio = <&tlmm 0x7d>,
+ *   dc-gpio = <&tlmm 0x44>, blk-gpio = <&tlmm 0x0c>
+ *   -> TE GPIO 124, RESET GPIO 125, DC GPIO 68, backlight GPIO 12
+ *   spi client: spi@7af6000, reg 0, spi-max-frequency = 0x2faf080 (50 MHz)
+ * [DTBO] fragment@31 spi_st7789v2_qvga_cmd:
+ *   name "st7789v2 qvga command mode spi panel", 0x80 x 0x80, 27 fps,
+ *   16 bpp, bl_gpio_pulse, full ST7789V2 init sequence.
+ * [HW]  section 3: real second display, "HDMI Screen", 128x128 @ 30 fps.
+ *
+ * The upstream driver (panel-sitronix-st7789v.c, "sitronix,st7789v") is the
+ * right family but has no 128x128 mode; the node is present and disabled
+ * until that mode + the 128x128 init sequence are added (plan item D2).
+ */
+&blsp2_spi2 {
+	status = "okay";
+
+	panel@0 {
+		compatible = "sitronix,st7789v";
+		reg = <0>;
+
+		spi-max-frequency = <50000000>;
+
+		reset-gpios = <&tlmm 125 GPIO_ACTIVE_LOW>;
+		dc-gpios = <&tlmm 68 GPIO_ACTIVE_HIGH>;
+		power-supply = <&pm8916_l17>;
+		backlight = <&backlight_sub>;
+
+		/* upstream driver has no 128x128 mode yet */
+		status = "disabled";
+	};
+};
+
+/*
+ * ==========================================================================
+ * Touch: chipsemi CHSC capacitive controller on blsp1_i2c3 (i2c@78b7000)
+ * ==========================================================================
+ * The vendor DTBO lists FOUR touch candidates on the same bus/pins:
+ *   smtouch@2e   "chipsemi,chsc_cap_touch"
+ *   goodix_ts@14 "goodix,gt1x"
+ *   focaltech@38 "focaltech,fts"
+ *   tsc@24       "cy,cyttsp5_i2c_adapter"
+ * Only one is live. [INP] is decisive:
+ *   /sys/class/input/input2 -> chsc_cap_touch
+ * ...and goodix / focaltech / cyttsp created no input device at all.
+ * [HW] also notes event2 (chsc_cap_touch) is the only node that produced
+ * events. So the live controller is the chipsemi part at 0x2e, IRQ GPIO 65
+ * (interrupts = <0x41 0x02>, EDGE_FALLING), reset GPIO 64.
+ * (Vendor kernel symbols confirm a full "chsc_*" driver: esd_check, glove,
+ * gesture, orientation, proximity, online_update.)
+ *
+ * No upstream driver exists for this part. The node is kept (disabled) so
+ * the bus, address and GPIOs are documented in one place; the properties are
+ * a mainline-style restatement of the vendor node, not an upstream binding.
+ */
+&blsp1_i2c3 {
+	status = "okay";
+
+	touchscreen@2e {
+		compatible = "chipsemi,chsc_cap_touch";
+		reg = <0x2e>;
+
+		interrupts-extended = <&tlmm 65 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&pm8916_l17>;
+		vio-supply = <&pm8916_l5>;
+
+		status = "disabled";
+	};
+};
+
+/* [DTBO] fragment@5: the PM8916 vibrator is enabled on this board. */
+&pm8916_vib {
+	status = "okay";
+};
+
+/*
+ * ==========================================================================
+ * pinctrl
+ * ==========================================================================
+ * The vendor pinctrl states for the hall, DSI reset/TE and SPI DC/reset live
+ * in the *base* DTB, which we do not have (DTBO only). States below are the
+ * minimum needed for the nodes above; electrical settings are ASSUMED where
+ * noted. GPIO numbers themselves are evidence, not assumptions.
+ */
+&tlmm {
+	hall_default: hall-default-state {
+		pins = "gpio44";
+		function = "gpio";
+		/* ASSUMED: vendor bias setting is not in the DTBO. Hall output
+		 * is driven (linux,min-uv/max-uv present in the vendor node),
+		 * so no bias is the safe default.
+		 */
+		bias-disable;
+	};
+
+	mdss_dsi_default: mdss-dsi-default-state {
+		/* [DTBO] fragment@41: TE = GPIO 24, reset = GPIO 60 */
+		pins = "gpio24", "gpio60";
+		function = "gpio";
+		drive-strength = <8>;	/* ASSUMED; vendor values in base DTB */
+		bias-disable;
+	};
+
+	mdss_dsi_sleep: mdss-dsi-sleep-state {
+		pins = "gpio24", "gpio60";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	sub_panel_default: sub-panel-default-state {
+		/* [DTBO] fragment@38: DC 68, reset 125, TE 124 at 8 mA */
+		pins = "gpio68", "gpio125", "gpio124";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	sub_panel_sleep: sub-panel-sleep-state {
+		/* [DTBO] fragment@39: BL 12, DC 68, TE 124, 2 mA pull-down */
+		pins = "gpio12", "gpio68", "gpio124";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
+
+/*
+ * ==========================================================================
+ * Deliberately left out (documented in docs/mainline-cat-plan.md)
+ * ==========================================================================
+ * - Charger/fuel gauge: the DTBO enables BOTH pm8916_chg/pm8916_bms
+ *   (fragments 3/4) and an external SMB1360 "qcom,smb1360-chg-fg" on
+ *   blsp1_i2c2 @ 0x14 (fragment@46, IRQ GPIO 13, usb-id PM8916 GPIO4,
+ *   float 0x1130 mV, 2800 mAh). The vendor kernel has a full smb1360_*
+ *   driver built in (out/kallsyms.txt) and uses it as the USB extcon
+ *   (fragment@47), so SMB1360 is the real charger. There is NO mainline
+ *   smb1360 driver. Until that is written, do not enable any charger node.
+ * - Cameras (CCI, two "qcom,camera" nodes), fingerprint (fpc1020),
+ *   smart PA (aw88xxx/aw8155), NFC (nq-nci), USB-C (wusb3801), sensors.
+ * - Modem/WCNSS/GPU: left at upstream defaults.
+ */
+
+/*
+ * ==========================================================================
+ * Pager-boot additions (cat-pager slice)
+ * ==========================================================================
+ * This file is a COPY of mainline/msm8937-cat-s22.dts. The original skeleton
+ * is left untouched. The only change is enabling the USB HS controller + PHY
+ * in peripheral mode so the initramfs can expose ttyGS0 over the USB ACM
+ * gadget even when no ID/extcon source is present.
+ *
+ * msm8937.dtsi defaults usb@78db000 and phy@6c000 to status = "disabled"
+ * and dr_mode = "otg". Without an extcon, chipidea cannot decide to become a
+ * peripheral, so force peripheral-only for this diagnostic boot.
+ */
+&usb {
+	status = "okay";
+	dr_mode = "peripheral";
+};
+
+&usb_hs_phy {
+	status = "okay";
+};
+
+/*
+ * ==========================================================================
+ * Registration-only MSS (modem) node
+ * ==========================================================================
+ * The S22's SIM is on the modem's UIM bus, not a PC/SC reader. This node
+ * registers the MSS remoteproc so probe can be observed without starting
+ * firmware (the upstream driver sets rproc->auto_boot = false).
+ *
+ * Evidence:
+ *   - stock DT MSS node: qdsp6 0x04080000/0x100, rmb 0x04020000/0x40,
+ *     watchdog SPI24, modem SMP2P bits 0..3, halt regs 0x194f000/0x1950000/
+ *     0x1951000 (TCSR +0x18000/+0x19000/+0x1a000), GCC MSS_BCR.
+ *   - stock modem reservation: 0x86800000 + 0x05500000.
+ *   - mba.mbn LOAD segments: 0x80c00000..0x80c49380.  The MBA reservation is
+ *     a 1 MiB no-map window at 0x80c00000; it is outside the kernel/initrd
+ *     load addresses and outside the stock modem_mem region.
+ *   - fitted stock has no qcom,pil-mss-memsetup, so the qm215-mss-pil variant
+ *     sets need_pas_mem_setup = false and does not acquire a separate mss
+ *     voltage regulator (stock routes MSS/CX through S1 level).
+ *
+ * This is not a qualified modem start.  Starting the remoteproc is a separate
+ * step that requires the CX/MX provider correction and RF review.
+ */
+&{/reserved-memory} {
+	mss_mba_mem: mba@80c00000 {
+		reg = <0x0 0x80c00000 0x0 0x100000>;
+		no-map;
+	};
+
+	mss_mpss_mem: mpss@86800000 {
+		reg = <0x0 0x86800000 0x0 0x5500000>;
+		no-map;
+	};
+};
+
+&soc {
+	mpss: remoteproc@4080000 {
+		compatible = "qcom,qm215-mss-pil";
+		reg = <0x04080000 0x100>,
+		      <0x04020000 0x40>;
+		reg-names = "qdsp6", "rmb";
+
+		interrupts-extended = <&intc GIC_SPI 24 IRQ_TYPE_EDGE_RISING>,
+				      <&modem_smp2p_in 0 IRQ_TYPE_EDGE_RISING>,
+				      <&modem_smp2p_in 1 IRQ_TYPE_EDGE_RISING>,
+				      <&modem_smp2p_in 2 IRQ_TYPE_EDGE_RISING>,
+				      <&modem_smp2p_in 3 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "wdog", "fatal", "ready",
+				  "handover", "stop-ack";
+
+		power-domains = <&rpmpd RPMPD_VDDCX>,
+				<&rpmpd RPMPD_VDDMX>;
+		power-domain-names = "cx", "mx";
+
+		clocks = <&gcc GCC_MSS_CFG_AHB_CLK>,
+			 <&gcc GCC_MSS_Q6_BIMC_AXI_CLK>,
+			 <&gcc GCC_BOOT_ROM_AHB_CLK>,
+			 <&rpmcc RPM_SMD_XO_CLK_SRC>;
+		clock-names = "iface", "bus", "mem", "xo";
+
+		qcom,smem-states = <&modem_smp2p_out 0>;
+		qcom,smem-state-names = "stop";
+
+		resets = <&gcc GCC_MSS_BCR>;
+		reset-names = "mss_restart";
+
+		qcom,halt-regs = <&tcsr 0x18000 0x19000 0x1a000>;
+
+		status = "disabled";
+
+		mba {
+			memory-region = <&mss_mba_mem>;
+		};
+
+		mpss {
+			memory-region = <&mss_mpss_mem>;
+		};
+
+		smd-edge {
+			interrupts = <GIC_SPI 25 IRQ_TYPE_EDGE_RISING>;
+			mboxes = <&apcs1 13>;
+			qcom,smd-edge = <0>;
+			qcom,remote-pid = <1>;
+			label = "modem";
+		};
+	};
+};

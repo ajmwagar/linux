@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
+#include "msm8937-cat-s22-camera-off-nopinctrl.dts"
+
+/ {
+	cpus {
+		idle-states {
+			entry-method = "psci";
+			CPU_SLEEP_0: cpu-sleep-0 {
+				compatible = "arm,idle-state";
+				entry-latency-us = <1000>;
+				exit-latency-us = <2000>;
+				min-residency-us = <5000>;
+				arm,psci-suspend-param = <0x00000000>;
+			};
+		};
+	};
+};
+
+&cpu0 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu1 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu2 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu3 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu4 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu5 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu6 { cpu-idle-states = <&CPU_SLEEP_0>; };
+&cpu7 { cpu-idle-states = <&CPU_SLEEP_0>; };

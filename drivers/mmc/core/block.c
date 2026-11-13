@@ -89,6 +89,10 @@ static DEFINE_MUTEX(block_mutex);
  * The defaults come from config options but can be overridden by module
  * or bootarg options.
  */
+static bool cat_mmc_read_only = true;
+module_param_named(cat_mmc_ro, cat_mmc_read_only, bool, 0444);
+MODULE_PARM_DESC(cat_mmc_ro, "Keep all MMC block devices read-only (default: true)");
+
 static int perdev_minors = CONFIG_MMC_BLOCK_MINORS;
 
 /*
@@ -2516,9 +2520,12 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	 * Set the read-only status based on the supported commands
 	 * and the write protect switch.
 	 */
-	/* CAT diagnostic image: all MMC disks permanently read-only at registration.
-	 * This intentionally cannot be undone through force_ro or BLKROSET. */
-	md->read_only = true;
+	/*
+	 * CAT S22 diagnostic images default all MMC disks to read-only.
+	 * Daily-driver images can opt in with cat_mmc_ro=0 on the kernel command
+	 * line. The default remains read-only so a mistyped boot cannot write eMMC.
+	 */
+	md->read_only = cat_mmc_read_only;
 
 	if (mmc_host_can_cmd23(card->host) && mmc_card_can_cmd23(card))
 		md->flags |= MMC_BLK_CMD23;

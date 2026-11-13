@@ -430,15 +430,27 @@ static struct qrtr_node *qrtr_node_lookup(unsigned int nid)
 static void qrtr_node_assign(struct qrtr_node *node, unsigned int nid)
 {
 	unsigned long flags;
+	bool assigned = false;
 
 	if (nid == QRTR_EP_NID_AUTO)
 		return;
 
 	spin_lock_irqsave(&qrtr_nodes_lock, flags);
 	radix_tree_insert(&qrtr_nodes, nid, node);
-	if (node->nid == QRTR_EP_NID_AUTO)
+	if (node->nid == QRTR_EP_NID_AUTO) {
 		WRITE_ONCE(node->nid, nid);
+		assigned = true;
+	}
 	spin_unlock_irqrestore(&qrtr_nodes_lock, flags);
+
+	/*
+	 * A HELLO can only be addressed once the node id is known, and the
+	 * handshake queued at registration was dropped if the id was still
+	 * QRTR_EP_NID_AUTO. The peer is alive (it just told us its id), so
+	 * send ours now.
+	 */
+	if (assigned && !READ_ONCE(node->hello_sent))
+		schedule_delayed_work(&node->say_hello, 0);
 }
 
 /**
@@ -601,6 +613,13 @@ static void qrtr_hello_work(struct work_struct *work)
 	struct sk_buff *skb;
 
 	node = container_of(to_delayed_work(work), struct qrtr_node, say_hello);
+
+	/* Without a node id the HELLO would be addressed to nobody, and marking
+	 * it sent would silence the handshake for good. qrtr_node_assign() queues
+	 * the work again as soon as the peer's first packet assigns the id.
+	 */
+	if (READ_ONCE(node->nid) == QRTR_EP_NID_AUTO)
+		return;
 
 	/* NS must be bound before we can send; retry with backoff if not ready */
 	ctrl = qrtr_port_lookup(QRTR_PORT_CTRL);

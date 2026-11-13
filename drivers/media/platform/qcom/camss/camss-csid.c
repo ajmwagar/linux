@@ -691,22 +691,32 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 		 * drawback in following the same powering order on older SoCs.
 		 */
 		ret = csid->res->parent_dev_ops->get(camss, csid->id);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: parent get failed %d\n",
+				csid->id, ret);
 			return ret;
+		}
 
 		ret = pm_runtime_resume_and_get(dev);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: rpm get failed %d\n",
+				csid->id, ret);
 			return ret;
+		}
 
 		ret = regulator_bulk_enable(csid->num_supplies,
 					    csid->supplies);
 		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: regulator failed %d\n",
+				csid->id, ret);
 			pm_runtime_put_sync(dev);
 			return ret;
 		}
 
 		ret = csid_set_clock_rates(csid);
 		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: clock rates failed %d\n",
+				csid->id, ret);
 			regulator_bulk_disable(csid->num_supplies,
 					       csid->supplies);
 			pm_runtime_put_sync(dev);
@@ -715,6 +725,8 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		ret = camss_enable_clocks(csid->nclocks, csid->clock, dev);
 		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: clock enable failed %d\n",
+				csid->id, ret);
 			regulator_bulk_disable(csid->num_supplies,
 					       csid->supplies);
 			pm_runtime_put_sync(dev);
@@ -727,6 +739,8 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 
 		ret = csid->res->hw_ops->reset(csid);
 		if (ret < 0) {
+			dev_err(dev, "CAT csid%d: reset failed %d\n",
+				csid->id, ret);
 			disable_irq(csid->irq);
 			camss_disable_clocks(csid->nclocks, csid->clock);
 			regulator_bulk_disable(csid->num_supplies,
@@ -736,6 +750,7 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 		}
 
 		csid->res->hw_ops->hw_version(csid);
+		dev_info(dev, "CAT csid%d: powered on\n", csid->id);
 	} else {
 		disable_irq(csid->irq);
 		camss_disable_clocks(csid->nclocks, csid->clock);
@@ -1292,7 +1307,15 @@ static int csid_link_setup(struct media_entity *entity,
 
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
 			csid->phy.lane_cnt = lane_cfg->num_data;
-			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg, lane_cfg->num_data);
+			if (csiphy->lane_assign_valid)
+				csid->phy.lane_assign = csiphy->lane_assign;
+			else
+				csid->phy.lane_assign = csid_get_lane_assign(lane_cfg,
+									lane_cfg->num_data);
+			dev_info(csid->camss->dev,
+				 "CAT csid lane_cnt=%u assign=0x%x explicit=%d\n",
+				 csid->phy.lane_cnt, csid->phy.lane_assign,
+				 csiphy->lane_assign_valid);
 			csid->tpg_linked = false;
 		}
 	}

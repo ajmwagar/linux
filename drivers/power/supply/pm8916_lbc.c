@@ -52,6 +52,7 @@
 #define PM8916_LBC_THERMAL_WARM_DECIDEGC 450
 #define PM8916_LBC_THERMAL_HOT_DECIDEGC 500
 #define PM8916_LBC_THERMAL_RESUME_DECIDEGC 400
+#define PM8916_LBC_THERMAL_HOT_RESUME_DECIDEGC 480
 
 #define PM8916_LBC_CHGR_MIN_CURRENT 90000
 #define PM8916_LBC_CHGR_MAX_CURRENT 1440000
@@ -86,6 +87,7 @@ struct pm8916_lbc_charger {
 	unsigned int thermal_warm_decidegc;
 	unsigned int thermal_hot_decidegc;
 	unsigned int thermal_resume_decidegc;
+	unsigned int thermal_hot_resume_decidegc;
 	unsigned int charge_voltage_max;
 	unsigned int charge_voltage_safe;
 	unsigned int charge_current_max;
@@ -270,9 +272,17 @@ pm8916_lbc_thermal_next_state(struct pm8916_lbc_charger *chg, int temp)
 	if (temp <= chg->thermal_resume_decidegc)
 		return PM8916_LBC_THERMAL_NORMAL;
 
-	/* Keep the hot state until the pack has cooled past the resume point. */
-	if (chg->thermal_state == PM8916_LBC_THERMAL_HOT)
+	/*
+	 * Re-enter WARM, not NORMAL, after a HOT event.  Under sustained
+	 * system load the pack can sit in the high 40s and never reach the
+	 * 40 C NORMAL resume point; WARM's 90 mA is already the policy for
+	 * 45..50 C, so use a separate HOT->WARM release point.
+	 */
+	if (chg->thermal_state == PM8916_LBC_THERMAL_HOT) {
+		if (temp <= chg->thermal_hot_resume_decidegc)
+			return PM8916_LBC_THERMAL_WARM;
 		return PM8916_LBC_THERMAL_HOT;
+	}
 
 	if (temp >= chg->thermal_warm_decidegc)
 		return PM8916_LBC_THERMAL_WARM;
@@ -368,6 +378,7 @@ static int pm8916_lbc_charger_probe_dt(struct pm8916_lbc_charger *chg)
 	chg->thermal_warm_decidegc = PM8916_LBC_THERMAL_WARM_DECIDEGC;
 	chg->thermal_hot_decidegc = PM8916_LBC_THERMAL_HOT_DECIDEGC;
 	chg->thermal_resume_decidegc = PM8916_LBC_THERMAL_RESUME_DECIDEGC;
+	chg->thermal_hot_resume_decidegc = PM8916_LBC_THERMAL_HOT_RESUME_DECIDEGC;
 
 	ret = device_property_read_string(dev, "qcom,battery-temperature-psy",
 					  &chg->battery_temp_supply);
@@ -387,8 +398,13 @@ static int pm8916_lbc_charger_probe_dt(struct pm8916_lbc_charger *chg)
 		if (!ret)
 			chg->thermal_resume_decidegc = tmp;
 
+		ret = device_property_read_u32(dev, "qcom,thermal-hot-resume-decidegc", &tmp);
+		if (!ret)
+			chg->thermal_hot_resume_decidegc = tmp;
+
 		if (chg->thermal_resume_decidegc >= chg->thermal_warm_decidegc ||
-		    chg->thermal_warm_decidegc >= chg->thermal_hot_decidegc)
+		    chg->thermal_warm_decidegc > chg->thermal_hot_resume_decidegc ||
+		    chg->thermal_hot_resume_decidegc >= chg->thermal_hot_decidegc)
 			return -EINVAL;
 	}
 

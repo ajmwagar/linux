@@ -297,6 +297,10 @@ static int csiphy_stream_on_legacy(struct csiphy_device *csiphy)
 		wmb();
 	}
 
+	dev_info(csiphy->camss->dev,
+		 "CSIPHY%d stream_on: lanes=%u mask=0x%02x link_freq=%lld csid=%d\n",
+		 csiphy->id, num_lanes, lane_mask, link_freq, cfg->csid_id);
+
 	csiphy->res->hw_ops->lanes_enable(csiphy, cfg, link_freq, lane_mask);
 
 	return 0;

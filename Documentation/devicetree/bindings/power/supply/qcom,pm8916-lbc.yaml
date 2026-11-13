@@ -76,6 +76,42 @@ properties:
       Maximum safe battery charge current in uA; May be pre-set by
       bootloader, in which case setting this will harmlessly fail.
 
+  qcom,battery-temperature-psy:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      Name of the power supply that reports battery temperature through
+      POWER_SUPPLY_PROP_TEMP.  When present, the driver applies the thermal
+      current limits below.
+
+  qcom,thermal-warm-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 450
+    description:
+      Battery temperature in decidegrees Celsius at or above which the
+      charger enters WARM and limits charge current.
+
+  qcom,thermal-hot-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 500
+    description:
+      Battery temperature in decidegrees Celsius at or above which the
+      charger enters HOT and disables charging.
+
+  qcom,thermal-resume-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 400
+    description:
+      Battery temperature in decidegrees Celsius at or below which WARM
+      returns to NORMAL charge current.
+
+  qcom,thermal-hot-resume-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 480
+    description:
+      Battery temperature in decidegrees Celsius at or below which HOT
+      returns to WARM.  Must be at least qcom,thermal-warm-decidegc and
+      less than qcom,thermal-hot-decidegc.
+
   monitored-battery: true
 
   qcom,battery-temperature-psy:
@@ -105,6 +141,17 @@ properties:
     maximum: 1000
     default: 400
     description: Battery temperature at which normal charging resumes.
+
+  qcom,thermal-hot-resume-decidegc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 1000
+    default: 480
+    description:
+      Battery temperature at which a hot-stopped charger releases into the
+      warm (limited-current) state instead of waiting for the normal resume
+      point. Must be below qcom,thermal-hot-decidegc and at or above
+      qcom,thermal-warm-decidegc.
 
 required:
   - compatible
@@ -154,6 +201,7 @@ examples:
         qcom,thermal-warm-decidegc = <450>;
         qcom,thermal-hot-decidegc = <500>;
         qcom,thermal-resume-decidegc = <400>;
+        qcom,thermal-hot-resume-decidegc = <480>;
 
         qcom,fast-charge-safe-current = <900000>;
         qcom,fast-charge-safe-voltage = <4300000>;

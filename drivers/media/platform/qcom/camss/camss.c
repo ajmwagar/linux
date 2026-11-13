@@ -37,6 +37,7 @@
 #define CAMSS_HW_VERSION		0x0
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
+static const struct parent_dev_ops cat_vfe_parent_dev_ops;
 
 static const struct camss_subdev_resources csiphy_res_8x16[] = {
 	/* CSIPHY0 */
@@ -330,7 +331,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid0" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -355,7 +356,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid1" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -380,7 +381,7 @@ static const struct camss_subdev_resources csid_res_8x53[] = {
 		.interrupt = { "csid2" },
 		.csid = {
 			.hw_ops = &csid_ops_3_4_3,
-			.parent_dev_ops = &vfe_parent_dev_ops,
+			.parent_dev_ops = &cat_vfe_parent_dev_ops,
 			.formats = &csid_formats_4_7
 		}
 	},
@@ -4672,6 +4673,35 @@ static const struct parent_dev_ops vfe_parent_dev_ops = {
 };
 
 /*
+ * CAT S22 / QM215 has a single VFE.  CSID0, CSID1 and CSID2 all reach VFE0
+ * through the ISPIF, so every CSID's parent is VFE0.  The generic
+ * vfe_parent_dev_ops maps CSID<n> to VFE<n> and rejects CSID1/CSID2 when the
+ * board has no VFE1.
+ */
+static int cat_vfe_parent_dev_ops_get(struct camss *camss, int id)
+{
+	if (!camss->res->vfe_num)
+		return -EINVAL;
+
+	return vfe_get(&camss->vfe[0]);
+}
+
+static int cat_vfe_parent_dev_ops_put(struct camss *camss, int id)
+{
+	if (!camss->res->vfe_num)
+		return -EINVAL;
+
+	vfe_put(&camss->vfe[0]);
+	return 0;
+}
+
+static const struct parent_dev_ops cat_vfe_parent_dev_ops = {
+	.get = cat_vfe_parent_dev_ops_get,
+	.put = cat_vfe_parent_dev_ops_put,
+	.get_base_address = vfe_parent_dev_ops_get_base_address
+};
+
+/*
  * camss_parse_endpoint_node - Parse port endpoint node
  * @dev: CAMSS device
  * @ep: Device endpoint to be parsed
@@ -4688,6 +4718,7 @@ static int camss_parse_endpoint_node(struct device *dev,
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
 	unsigned int i;
+	u32 lane_assign;
 	int ret;
 
 	ret = v4l2_fwnode_endpoint_parse(ep, &vep);
@@ -4704,6 +4735,11 @@ static int camss_parse_endpoint_node(struct device *dev,
 	}
 
 	csd->interface.csiphy_id = vep.base.port;
+
+	if (!fwnode_property_read_u32(ep, "qcom,lane-assign", &lane_assign)) {
+		csd->lane_assign = lane_assign;
+		csd->lane_assign_valid = true;
+	}
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
 	lncfg->clk.pos = mipi_csi2->clock_lane;
@@ -5202,6 +5238,8 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct csiphy_device *csiphy = &camss->csiphy[id];
 
 	csiphy->cfg.csi2 = &csd->interface.csi2;
+	csiphy->lane_assign = csd->lane_assign;
+	csiphy->lane_assign_valid = csd->lane_assign_valid;
 	subdev->host_priv = csiphy;
 
 	return 0;

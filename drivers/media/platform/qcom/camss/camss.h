@@ -151,6 +151,8 @@ struct camss_camera_interface {
 struct camss_async_subdev {
 	struct v4l2_async_connection asd; /* must be first */
 	struct camss_camera_interface interface;
+	u32 lane_assign;
+	bool lane_assign_valid;
 };
 
 struct camss_clock {

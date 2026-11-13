@@ -41,12 +41,60 @@
 
 #define GC5035_LANES			2
 #define GC5035_BITS_PER_SAMPLE		10
-#define GC5035_LINK_FREQ_MHZ		438000000LL
-#define MIPI_FREQ		438000000LL
+#define GC5035_LINK_FREQ_MHZ         438000000LL
+#define MIPI_FREQ            438000000LL
 
 /* pixel rate = link frequency * 2 * lanes / BITS_PER_SAMPLE */
 #define GC5035_PIXEL_RATE		(MIPI_FREQ * 2LL * 2LL / 10)
 #define GC5035_XVCLK_FREQ		24000000
+
+static bool alt_stream;
+module_param(alt_stream, bool, 0644);
+MODULE_PARM_DESC(alt_stream, "Also try page 1 register 0x00 stream enable");
+
+static int stream_retry = 1;
+module_param(stream_retry, int, 0644);
+MODULE_PARM_DESC(stream_retry, "Retry stream-on register writes");
+
+static int mode_retry = 1;
+module_param(mode_retry, int, 0644);
+MODULE_PARM_DESC(mode_retry, "Retry the mode register table");
+
+static int stream_delay_ms = 10;
+module_param(stream_delay_ms, int, 0644);
+MODULE_PARM_DESC(stream_delay_ms, "Delay after mode table before stream-on");
+
+static int pwdn_after = -1;
+module_param(pwdn_after, int, 0644);
+MODULE_PARM_DESC(pwdn_after, "Drive pwdn GPIO to this level after stream-on (-1 = no)");
+
+static int reset_after = -1;
+module_param(reset_after, int, 0644);
+MODULE_PARM_DESC(reset_after, "Drive reset GPIO to this level after stream-on (-1 = no)");
+
+static int force_reg = -1;
+module_param(force_reg, int, 0644);
+MODULE_PARM_DESC(force_reg, "Extra register to write after stream-on (-1 = none)");
+
+static int force_val = -1;
+module_param(force_val, int, 0644);
+MODULE_PARM_DESC(force_val, "Value for force_reg");
+
+static int force_page;
+module_param(force_page, int, 0644);
+MODULE_PARM_DESC(force_page, "Page used by the force_* register writes");
+
+static int force_exposure = -1;
+module_param(force_exposure, int, 0644);
+MODULE_PARM_DESC(force_exposure, "Force exposure 0x03/0x04 (-1 = leave alone)");
+
+static int force_again = -1;
+module_param(force_again, int, 0644);
+MODULE_PARM_DESC(force_again, "Force analog gain 0xb6 (-1 = leave alone)");
+
+static int force_dgain = -1;
+module_param(force_dgain, int, 0644);
+MODULE_PARM_DESC(force_dgain, "Force digital gain 0xb1/0xb2 (-1 = leave alone)");
 
 #define CHIP_ID				0x5035
 #define GC5035_REG_CHIP_ID_H		0xf0
@@ -68,6 +116,9 @@
 #define GC5035_VTS_MAX			0x1fff
 
 #define GC5035_REG_AGAIN		0xb6
+
+/* cat-s22: the coarse gain register that responds on this part */
+#define GC5035_REG_GAIN_COARSE		0xb0
 #define GC5035_REG_DGAIN_INT		0xb1
 #define GC5035_REG_DGAIN_FRAC		0xb2
 #define GC5035_GAIN_MIN			64
@@ -105,7 +156,7 @@ static const char * const gc5035_supply_names[] = {
 #define WINDOW_HEIGHT		0x079c
 
 /* SENSOR MIRROR FLIP INFO */
-#define GC5035_MIRROR_FLIP_ENABLE         0
+#define GC5035_MIRROR_FLIP_ENABLE         1
 #if GC5035_MIRROR_FLIP_ENABLE
 #define GC5035_MIRROR                     0x83
 #define GC5035_RSTDUMMY1                  0x03
@@ -187,7 +238,8 @@ struct gc5035 {
 	const char		*module_facing;
 	const char		*module_name;
 	const char		*len_name;
-	u32 Dgain_ratio;
+	u32			cur_exposure;
+	u32			cur_gain;
 	struct gc5035_otp_info *otp;
 	struct rkmodule_inf	module_inf;
 	struct rkmodule_awb_cfg	awb_cfg;
@@ -201,184 +253,26 @@ struct gc5035 {
  * Xclk 24Mhz
  */
 static const struct regval gc5035_global_regs[] = {
-	/* SYSTEM */
-	{0xfc, 0x01},
-	{0xf4, 0x40},
-	{0xf5, 0xe9},
-	{0xf6, 0x14},
-	{0xf8, 0x49},
-	{0xf9, 0x82},
-	{0xfa, 0x00},
-	{0xfc, 0x81},
-	{0xfe, 0x00},
-	{0x36, 0x01},
-	{0xd3, 0x87},
-	{0x36, 0x00},
-	{0x33, 0x00},
-	{0xfe, 0x03},
-	{0x01, 0xe7},
-	{0xf7, 0x01},
-	{0xfc, 0x8f},
-	{0xfc, 0x8f},
-	{0xfc, 0x8e},
-	{0xfe, 0x00},
-	{0xee, 0x30},
-	{0x87, 0x18},
-	{0xfe, 0x01},
-	{0x8c, 0x90},
-	{0xfe, 0x00},
-
-	/* Analog & CISCTL */
-	{0xfe, 0x00},
-	{0x05, 0x02},
-	{0x06, 0xda},
-	{0x9d, 0x0c},
-	{0x09, 0x00},
-	{0x0a, 0x04},
-	{0x0b, 0x00},
-	{0x0c, 0x03},
-	{0x0d, 0x07},
-	{0x0e, 0xa8},
-	{0x0f, 0x0a},
-	{0x10, 0x30},
-	{0x11, 0x02},
-	{0x17, GC5035_MIRROR},
-	{0x19, 0x05},
-	{0xfe, 0x02},
-	{0x30, 0x03},
-	{0x31, 0x03},
-	{0xfe, 0x00},
-	{0xd9, 0xc0},
-	{0x1b, 0x20},
-	{0x21, 0x48},
-	{0x28, 0x22},
-	{0x29, 0x58},
-	{0x44, 0x20},
-	{0x4b, 0x10},
-	{0x4e, 0x1a},
-	{0x50, 0x11},
-	{0x52, 0x33},
-	{0x53, 0x44},
-	{0x55, 0x10},
-	{0x5b, 0x11},
-	{0xc5, 0x02},
-	{0x8c, 0x1a},
-	{0xfe, 0x02},
-	{0x33, 0x05},
-	{0x32, 0x38},
-	{0xfe, 0x00},
-	{0x91, 0x80},
-	{0x92, 0x28},
-	{0x93, 0x20},
-	{0x95, 0xa0},
-	{0x96, 0xe0},
-	{0xd5, 0xfc},
-	{0x97, 0x28},
-	{0x16, 0x0c},
-	{0x1a, 0x1a},
-	{0x1f, 0x11},
-	{0x20, 0x10},
-	{0x46, 0xe3},
-	{0x4a, 0x04},
-	{0x54, GC5035_RSTDUMMY1},
-	{0x62, 0x00},
-	{0x72, 0xcf},
-	{0x73, 0xc9},
-	{0x7a, 0x05},
-	{0x7d, 0xcc},
-	{0x90, 0x00},
-	{0xce, 0x98},
-	{0xd0, 0xb2},
-	{0xd2, 0x40},
-	{0xe6, 0xe0},
-	{0xfe, 0x02},
-	{0x12, 0x01},
-	{0x13, 0x01},
-	{0x14, 0x01},
-	{0x15, 0x02},
-	{0x22, GC5035_RSTDUMMY2},
-	{0x91, 0x00},
-	{0x92, 0x00},
-	{0x93, 0x00},
-	{0x94, 0x00},
-	{0xfe, 0x00},
-	{0xfc, 0x88},
-	{0xfe, 0x10},
-	{0xfe, 0x00},
-	{0xfc, 0x8e},
-	{0xfe, 0x00},
-	{0xfe, 0x00},
-	{0xfe, 0x00},
-	{0xfc, 0x88},
-	{0xfe, 0x10},
-	{0xfe, 0x00},
-	{0xfc, 0x8e},
-
-	/* Gain */
-	{0xfe, 0x00},
-	{0xb0, 0x6e},
-	{0xb1, 0x01},
-	{0xb2, 0x00},
-	{0xb3, 0x00},
-	{0xb4, 0x00},
-	{0xb6, 0x00},
-
-	/* ISP */
-	{0xfe, 0x01},
-	{0x53, 0x00},
-	{0x89, 0x03},
-	{0x60, 0x40},
-	{0x87, 0x50},
-
-	/* BLK */
-	{0xfe, 0x01},
-	{0x42, 0x21},
-	{0x49, 0x03},
-	{0x4a, 0xff},
-	{0x4b, 0xc0},
-	{0x55, 0x00},
-
-	/* Anti_blooming */
-	{0xfe, 0x01},
-	{0x41, 0x28},
-	{0x4c, 0x00},
-	{0x4d, 0x00},
-	{0x4e, 0x3c},
-	{0x44, 0x08},
-	{0x48, 0x01},
-
-	/* Crop */
-	{0xfe, 0x01},
-	{0x91, 0x00},
-	{0x92, 0x08},
-	{0x93, 0x00},
-	{0x94, 0x07},
-	{0x95, 0x07},
-	{0x96, 0x98},
-	{0x97, 0x0a},
-	{0x98, 0x20},
-	{0x99, 0x00},
-
-	/* MIPI */
-	{0xfe, 0x03},
-	{0x02, 0x57},
-	{0x03, 0xb7},
-	{0x15, 0x14},
-	{0x18, 0x0f},
-	{0x21, 0x22},
-	{0x22, 0x06},
-	{0x23, 0x48},
-	{0x24, 0x12},
-	{0x25, 0x28},
-	{0x26, 0x08},
-	{0x29, 0x06},
-	{0x2a, 0x58},
-	{0x2b, 0x08},
-	{0xfe, 0x01},
-	{0x8c, 0x10},
-
-	{0xfe, 0x00},
-	{0x3e, 0x01},
+	{0xfc, 0x01}, {0xf4, 0x40}, {0xf5, 0xe9}, {0xf6, 0x14}, {0xf8, 0x49}, {0xf9, 0x82}, {0xfa, 0x00}, {0xfc, 0x81},
+	{0xfe, 0x00}, {0x36, 0x01}, {0xd3, 0x87}, {0x36, 0x00}, {0x33, 0x00}, {0xfe, 0x03}, {0x01, 0xe7}, {0xf7, 0x01},
+	{0xfc, 0x8f}, {0xfc, 0x8f}, {0xfc, 0x8e}, {0xfe, 0x00}, {0xee, 0x30}, {0x87, 0x18}, {0xfe, 0x01}, {0x8c, 0x90},
+	{0xfe, 0x00}, {0xfe, 0x00}, {0x05, 0x02}, {0x06, 0xda}, {0x9d, 0x0c}, {0x09, 0x00}, {0x0a, 0x04}, {0x0b, 0x00},
+	{0x0c, 0x03}, {0x0d, 0x07}, {0x0e, 0xa8}, {0x0f, 0x0a}, {0x10, 0x30}, {0x11, 0x02}, {0x17, 0x83}, {0x19, 0x05},
+	{0xfe, 0x02}, {0x30, 0x03}, {0x31, 0x03}, {0xfe, 0x00}, {0xd9, 0xc0}, {0x1b, 0x20}, {0x21, 0x48}, {0x28, 0x22},
+	{0x29, 0x58}, {0x44, 0x20}, {0x4b, 0x10}, {0x4e, 0x1a}, {0x50, 0x11}, {0x52, 0x33}, {0x53, 0x44}, {0x55, 0x10},
+	{0x5b, 0x11}, {0xc5, 0x02}, {0x8c, 0x1a}, {0xfe, 0x02}, {0x33, 0x05}, {0x32, 0x38}, {0xfe, 0x00}, {0x91, 0x80},
+	{0x92, 0x28}, {0x93, 0x20}, {0x95, 0xa0}, {0x96, 0xe0}, {0xd5, 0xfc}, {0x97, 0x28}, {0x16, 0x0c}, {0x1a, 0x1a},
+	{0x1f, 0x11}, {0x20, 0x10}, {0x46, 0x83}, {0x4a, 0x04}, {0x54, 0x03}, {0x62, 0x00}, {0x72, 0x8f}, {0x73, 0x89},
+	{0x7a, 0x05}, {0x7d, 0xcc}, {0x90, 0x00}, {0xce, 0x18}, {0xd0, 0xb2}, {0xd2, 0x40}, {0xe6, 0xe0}, {0xfe, 0x02},
+	{0x12, 0x01}, {0x13, 0x01}, {0x14, 0x01}, {0x15, 0x02}, {0x22, 0xfc}, {0xfe, 0x00}, {0xfc, 0x88}, {0xfe, 0x10},
+	{0xfe, 0x00}, {0xfc, 0x8e}, {0xfe, 0x00}, {0xfe, 0x00}, {0xfe, 0x00}, {0xfc, 0x88}, {0xfe, 0x10}, {0xfe, 0x00},
+	{0xfc, 0x8e}, {0xfe, 0x00}, {0xb0, 0x6e}, {0xb1, 0x01}, {0xb2, 0x00}, {0xb3, 0x00}, {0xb4, 0x00}, {0xb6, 0x00},
+	{0xfe, 0x01}, {0x53, 0x00}, {0x89, 0x03}, {0x60, 0x40}, {0xfe, 0x01}, {0x42, 0x21}, {0x49, 0x03}, {0x4a, 0xff},
+	{0x4b, 0xc0}, {0x55, 0x00}, {0xfe, 0x01}, {0x41, 0x28}, {0x4c, 0x00}, {0x4d, 0x00}, {0x4e, 0x3c}, {0x44, 0x08},
+	{0x48, 0x02}, {0xfe, 0x01}, {0x91, 0x00}, {0x92, 0x08}, {0x93, 0x00}, {0x94, 0x07}, {0x95, 0x07}, {0x96, 0x98},
+	{0x97, 0x0a}, {0x98, 0x20}, {0x99, 0x00}, {0xfe, 0x03}, {0x02, 0x57}, {0x03, 0xb7}, {0x15, 0x14}, {0x18, 0x0f},
+	{0x21, 0x22}, {0x22, 0x06}, {0x23, 0x48}, {0x24, 0x12}, {0x25, 0x28}, {0x26, 0x08}, {0x29, 0x06}, {0x2a, 0x58},
+	{0x2b, 0x08}, {0xfe, 0x01}, {0x8c, 0x10}, {0xfe, 0x00}, {0x3e, 0x01},
 	{REG_NULL, 0x00},
 };
 
@@ -388,9 +282,21 @@ static const struct regval gc5035_global_regs[] = {
  * mipi_datarate per lane 876Mbps
  */
 static const struct regval gc5035_2592x1944_regs[] = {
-	/* lane snap */
+	{0xfc, 0x01}, {0xf4, 0x40}, {0xf5, 0xe9}, {0xf6, 0x14}, {0xf8, 0x49}, {0xf9, 0x82}, {0xfa, 0x00}, {0xfc, 0x81},
+	{0xfe, 0x00}, {0x36, 0x01}, {0xd3, 0x87}, {0x36, 0x00}, {0x33, 0x00}, {0xfe, 0x03}, {0x01, 0xe7}, {0xf7, 0x01},
+	{0xfc, 0x8f}, {0xfc, 0x8f}, {0xfc, 0x8e}, {0xfe, 0x00}, {0xee, 0x30}, {0x87, 0x18}, {0xfe, 0x01}, {0x8c, 0x90},
+	{0xfe, 0x00}, {0xfe, 0x00}, {0x05, 0x02}, {0x06, 0xda}, {0x9d, 0x0c}, {0x09, 0x00}, {0x0a, 0x04}, {0x0b, 0x00},
+	{0x0c, 0x03}, {0x0d, 0x07}, {0x0e, 0xa8}, {0x0f, 0x0a}, {0x10, 0x30}, {0xd9, 0xc0}, {0x21, 0x48}, {0x29, 0x58},
+	{0x44, 0x20}, {0x4e, 0x1a}, {0x8c, 0x1a}, {0x91, 0x80}, {0x92, 0x28}, {0x93, 0x20}, {0x95, 0xa0}, {0x96, 0xe0},
+	{0xd5, 0xfc}, {0x97, 0x28}, {0x1f, 0x11}, {0xce, 0x18}, {0xd0, 0xb2}, {0xfe, 0x02}, {0x14, 0x01}, {0x15, 0x02},
+	{0x91, 0x00}, {0x92, 0x00}, {0xfe, 0x00}, {0xfc, 0x88}, {0xfe, 0x10}, {0xfe, 0x00}, {0xfc, 0x8e}, {0xfe, 0x00},
+	{0xfe, 0x00}, {0xfe, 0x00}, {0xfc, 0x88}, {0xfe, 0x10}, {0xfe, 0x00}, {0xfc, 0x8e}, {0xfe, 0x01}, {0x49, 0x03},
+	{0x4a, 0xff}, {0x4b, 0xc0}, {0xfe, 0x01}, {0x4e, 0x3c}, {0x44, 0x08}, {0xfe, 0x01}, {0x91, 0x00}, {0x92, 0x08},
+	{0x93, 0x00}, {0x94, 0x07}, {0x95, 0x07}, {0x96, 0x98}, {0x97, 0x0a}, {0x98, 0x20}, {0x99, 0x00}, {0xfe, 0x03},
+	{0x02, 0x57}, {0x22, 0x06}, {0x26, 0x08}, {0x29, 0x06}, {0x2b, 0x08}, {0xfe, 0x01}, {0x8c, 0x10}, {0xfe, 0x00},
 	{REG_NULL, 0x00},
 };
+
 
 static const struct gc5035_mode supported_modes_2lane[] = {
 	{
@@ -762,11 +668,19 @@ static long gc5035_compat_ioctl32(struct v4l2_subdev *sd,
 
 static int __gc5035_start_stream(struct gc5035 *gc5035)
 {
+	struct device *dev = &gc5035->client->dev;
+	int i;
+	u8 page = 0, mode = 0, mipi0 = 0, mipi1 = 0, mipi2 = 0;
+	u8 mipi3 = 0, mipi4 = 0, mipi5 = 0, mipi6 = 0, alt_00 = 0;
+	u8 r_exp_h = 0, r_exp_l = 0, r_b1 = 0, r_b2 = 0, r_b6 = 0;
 	int ret;
 
-	ret = gc5035_write_array(gc5035->client, gc5035->cur_mode->reg_list);
-	if (ret)
-		return ret;
+	for (i = 0; i < mode_retry; i++) {
+		ret = gc5035_write_array(gc5035->client, gc5035->cur_mode->reg_list);
+		if (ret)
+			return ret;
+		msleep(stream_delay_ms);
+	}
 
 	/* In case these controls are set before streaming */
 	mutex_unlock(&gc5035->mutex);
@@ -774,12 +688,108 @@ static int __gc5035_start_stream(struct gc5035 *gc5035)
 	mutex_lock(&gc5035->mutex);
 	if (ret)
 		return ret;
-	ret = gc5035_write_reg(gc5035->client,
-		GC5035_REG_SET_PAGE,
-		GC5035_SET_PAGE_ONE);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_CTRL_MODE,
-		GC5035_MODE_STREAMING);
+	for (i = 0; i < stream_retry; i++) {
+		int wret;
+
+		wret = gc5035_write_reg(gc5035->client,
+			GC5035_REG_SET_PAGE,
+			GC5035_SET_PAGE_ONE);
+		wret |= gc5035_write_reg(gc5035->client,
+			GC5035_REG_CTRL_MODE,
+			GC5035_MODE_STREAMING);
+		msleep(10);
+		gc5035_read_reg(gc5035->client, GC5035_REG_CTRL_MODE, &mode);
+		dev_info(dev, "stream attempt %d mode=0x%02x wret=%d\n",
+			 i, mode, wret);
+		ret |= wret;
+		if (mode == GC5035_MODE_STREAMING)
+			break;
+	}
+
+	if (force_exposure >= 0 || force_again >= 0 || force_dgain >= 0) {
+		u32 exp = force_exposure >= 0 ? (u32)force_exposure : 0;
+
+		gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE,
+				 force_page);
+		if (force_exposure >= 0) {
+			gc5035_write_reg(gc5035->client, 0x03,
+					 (exp >> 8) & 0x3f);
+			gc5035_write_reg(gc5035->client, 0x04, exp & 0xff);
+		}
+		if (force_again >= 0)
+			gc5035_write_reg(gc5035->client, 0xb6,
+					 force_again & 0xff);
+		if (force_dgain >= 0) {
+			gc5035_write_reg(gc5035->client, 0xb1,
+					 (force_dgain >> 6) & 0xff);
+			gc5035_write_reg(gc5035->client, 0xb2,
+					 force_dgain & 0x3f);
+		}
+		gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x00);
+		dev_info(dev, "force: page=%d exp=%d again=%d dgain=%d\n",
+			 force_page, force_exposure, force_again, force_dgain);
+	}
+
+	if (force_reg >= 0) {
+		gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, force_page);
+		gc5035_write_reg(gc5035->client, force_reg & 0xff, force_val & 0xff);
+		gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x00);
+		dev_info(dev, "force reg: page=%d reg=0x%02x val=0x%02x\n",
+			 force_page, force_reg & 0xff, force_val & 0xff);
+	}
+
+	if (pwdn_after >= 0 || reset_after >= 0) {
+		if (pwdn_after >= 0 && !IS_ERR(gc5035->pwdn_gpio))
+			gpiod_set_value_cansleep(gc5035->pwdn_gpio, pwdn_after);
+		if (reset_after >= 0 && !IS_ERR(gc5035->reset_gpio))
+			gpiod_set_value_cansleep(gc5035->reset_gpio, reset_after);
+		usleep_range(5000, 8000);
+		dev_info(dev, "gpio after: pwdn=%d reset=%d\n",
+			 pwdn_after, reset_after);
+	}
+
+	gc5035_read_reg(gc5035->client, GC5035_REG_SET_PAGE, &page);
+	u8 page1_before = 0, page1_after = 0;
+	gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x01);
+	gc5035_read_reg(gc5035->client, GC5035_REG_CTRL_MODE, &page1_before);
+	gc5035_write_reg(gc5035->client, GC5035_REG_CTRL_MODE,
+			 GC5035_MODE_STREAMING);
+	msleep(5);
+	gc5035_read_reg(gc5035->client, GC5035_REG_CTRL_MODE, &page1_after);
+	if (alt_stream) {
+		gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x01);
+		gc5035_write_reg(gc5035->client, 0x00, 0x01);
+		msleep(5);
+		gc5035_read_reg(gc5035->client, 0x00, &alt_00);
+	}
+	gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x03);
+	gc5035_read_reg(gc5035->client, 0x02, &mipi0);
+	gc5035_read_reg(gc5035->client, 0x03, &mipi1);
+	gc5035_read_reg(gc5035->client, 0x15, &mipi2);
+	gc5035_read_reg(gc5035->client, 0x18, &mipi3);
+	gc5035_read_reg(gc5035->client, 0x21, &mipi4);
+	gc5035_read_reg(gc5035->client, 0x22, &mipi5);
+	gc5035_read_reg(gc5035->client, 0x23, &mipi6);
+	gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, 0x00);
+	{
+		u8 pll[7];
+		for (i = 0; i < 7; i++)
+			gc5035_read_reg(gc5035->client, 0xf4 + i, &pll[i]);
+		dev_info(dev, "pll=%02x %02x %02x %02x %02x %02x %02x\n",
+			 pll[0], pll[1], pll[2], pll[3], pll[4], pll[5], pll[6]);
+	}
+	gc5035_read_reg(gc5035->client, 0x03, &r_exp_h);
+	gc5035_read_reg(gc5035->client, 0x04, &r_exp_l);
+	gc5035_read_reg(gc5035->client, 0xb1, &r_b1);
+	gc5035_read_reg(gc5035->client, 0xb2, &r_b2);
+	gc5035_read_reg(gc5035->client, 0xb6, &r_b6);
+	gc5035_write_reg(gc5035->client, GC5035_REG_SET_PAGE, page);
+
+	dev_info(dev,
+		 "stream diag: page=0x%02x mode=0x%02x p1=%02x/%02x alt=%02x mipi=%02x %02x %02x %02x %02x %02x %02x exp=%02x%02x gain=%02x/%02x/%02x ret=%d\n",
+		 page, mode, page1_before, page1_after, alt_00, mipi0, mipi1, mipi2,
+		 mipi3, mipi4, mipi5, mipi6, r_exp_h, r_exp_l, r_b6, r_b1, r_b2,
+		 ret);
 	return ret;
 }
 
@@ -909,12 +919,12 @@ static int __gc5035_power_on(struct gc5035 *gc5035)
 	}
 
 	usleep_range(1000, 1100);
-	if (!IS_ERR(gc5035->reset_gpio))
-		gpiod_set_value_cansleep(gc5035->reset_gpio, 1);
-
-	usleep_range(500, 1000);
 	if (!IS_ERR(gc5035->pwdn_gpio))
 		gpiod_set_value_cansleep(gc5035->pwdn_gpio, 1);
+
+	usleep_range(500, 1000);
+	if (!IS_ERR(gc5035->reset_gpio))
+		gpiod_set_value_cansleep(gc5035->reset_gpio, 1);
 
 	/* 8192 cycles prior to first SCCB transaction */
 	delay_us = gc5035_cal_delay(8192);
@@ -1046,6 +1056,14 @@ static int gc5035_set_test_pattern(struct gc5035 *gc5035, int value)
 {
 	int ret = 0;
 
+	/*
+	 * Page 1 register 0x8c is the vendor MIPI/clock configuration
+	 * (0x10 after the mode table), not a test-pattern selector.  Do not
+	 * overwrite it with the control's disabled value.
+	 */
+	if (value == 0)
+		return 0;
+
 	dev_info(&gc5035->client->dev, "Test Pattern!!\n");
 	ret = gc5035_write_reg(gc5035->client, 0xfe, 0x01);
 	ret |= gc5035_write_reg(gc5035->client, 0x8c, value);
@@ -1061,81 +1079,67 @@ static const char * const gc5035_test_pattern_menu[] = {
 	"Vertical Color Bar Type 4"
 };
 
-static int gc5035_set_exposure_reg(struct gc5035 *gc5035, u32 exposure)
+/*
+ * The vendor library sends one page-0 bundle per AE update: page select,
+ * shutter, frame length, then gain.  Writing the shutter registers on their
+ * own does not take effect on this part - they keep reading back the power-on
+ * value whatever is written - so keep the bundle shape and always re-send the
+ * frame length together with the shutter.
+ */
+static void gc5035_gain_codes(u32 a_gain, u8 *coarse, u8 *fine)
 {
-	u32 caltime = 0;
-	int ret = 0;
+	a_gain = clamp_val(a_gain, GC5035_GAIN_MIN, GC5035_GAIN_MAX);
 
-	caltime = exposure / 2;
-	caltime = caltime * 2;
-	gc5035->Dgain_ratio = 64 * exposure / caltime;
-	ret = gc5035_write_reg(gc5035->client,
-		GC5035_REG_SET_PAGE,
-		GC5035_SET_PAGE_ONE);
-
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_EXPOSURE_H,
-		(caltime >> 8) & 0x3F);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_EXPOSURE_L,
-		caltime & 0xFF);
-
-	return ret;
+	/*
+	 * The mode-table defaults (0xb0 = 0x6e, 0xb2 = 0x00) are 1x.  Measured on
+	 * this sensor, 0xb0 = 0xff is about 2x and 0xb2 = 0xfc about 1.7x on top
+	 * of it.  0xb1 and 0xb6 do not change the output and stay at their table
+	 * defaults.
+	 */
+	*coarse = 0x6e + (a_gain - GC5035_GAIN_MIN) * (0xff - 0x6e) /
+		  (GC5035_GAIN_MAX - GC5035_GAIN_MIN);
+	*fine = (a_gain - GC5035_GAIN_MIN) * 0xfc /
+		(GC5035_GAIN_MAX - GC5035_GAIN_MIN);
 }
 
-static u32 GC5035_AGC_Param[17][2] = {
-	{64, 0},
-	{76, 1},
-	{90, 2},
-	{106, 3},
-	{126, 8},
-	{150, 9},
-	{179, 10},
-	{211, 11},
-	{250, 12},
-	{301, 13},
-	{358, 14},
-	{427, 15},
-	{499, 16},
-	{589, 17},
-	{704, 18},
-	{830, 19},
-	{998, 20},
-};
+static int gc5035_write_ae(struct gc5035 *gc5035)
+{
+	struct regval ae[] = {
+		{GC5035_REG_SET_PAGE, GC5035_SET_PAGE_ONE},
+		{GC5035_REG_EXPOSURE_H, 0},
+		{GC5035_REG_EXPOSURE_L, 0},
+		{GC5035_REG_VTS_H, 0},
+		{GC5035_REG_VTS_L, 0},
+		{GC5035_REG_GAIN_COARSE, 0},
+		{GC5035_REG_DGAIN_INT, 0x01},
+		{GC5035_REG_DGAIN_FRAC, 0},
+		{REG_NULL, 0},
+	};
+	u8 coarse, fine;
+
+	gc5035_gain_codes(gc5035->cur_gain, &coarse, &fine);
+
+	/* The part ignores the two low bits of shutter and frame length */
+	ae[1].val = (gc5035->cur_exposure >> 8) & 0x3f;
+	ae[2].val = gc5035->cur_exposure & 0xfc;
+	ae[3].val = (gc5035->cur_vts >> 8) & 0x3f;
+	ae[4].val = gc5035->cur_vts & 0xfc;
+	ae[5].val = coarse;
+	ae[7].val = fine;
+
+	return gc5035_write_array(gc5035->client, ae);
+}
+
+static int gc5035_set_exposure_reg(struct gc5035 *gc5035, u32 exposure)
+{
+	gc5035->cur_exposure = max_t(u32, exposure, GC5035_EXPOSURE_MIN);
+	return gc5035_write_ae(gc5035);
+}
 
 static int gc5035_set_gain_reg(struct gc5035 *gc5035, u32 a_gain)
 {
-	struct device *dev = &gc5035->client->dev;
-	int ret = 0, i = 0;
-	u32 temp_gain = 0;
-
-	dev_info(dev, "%s(%d) a_gain(0x%08x)!\n", __func__, __LINE__, a_gain);
-	if (a_gain < 0x40)
-		a_gain = 0x40;
-	else if (a_gain > 0x400)
-		a_gain = 0x400;
-	for (i = 16; i >= 0; i--) {
-		if (a_gain >= GC5035_AGC_Param[i][0])
-			break;
-	}
-
-	ret = gc5035_write_reg(gc5035->client,
-		GC5035_REG_SET_PAGE,
-		GC5035_SET_PAGE_ONE);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_AGAIN, GC5035_AGC_Param[i][1]);
-	temp_gain = a_gain;
-	temp_gain = temp_gain * gc5035->Dgain_ratio / GC5035_AGC_Param[i][0];
-
-	dev_info(dev, "AGC_Param[%d][0](%d) temp_gain is(0x%08x)!\n",
-				i, GC5035_AGC_Param[i][0], temp_gain);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_DGAIN_INT,
-		temp_gain >> 6);
-	ret |= gc5035_write_reg(gc5035->client,
-		GC5035_REG_DGAIN_FRAC,
-		(temp_gain << 2) & 0xfc);
-	return ret;
+	gc5035->cur_gain = a_gain;
+	return gc5035_write_ae(gc5035);
 }
 
 static void gc5035_modify_fps_info(struct gc5035 *gc5035)
@@ -1178,16 +1182,8 @@ static int gc5035_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = gc5035_set_gain_reg(gc5035, ctrl->val);
 		break;
 	case V4L2_CID_VBLANK:
-		ret = gc5035_write_reg(gc5035->client,
-			GC5035_REG_SET_PAGE,
-			GC5035_SET_PAGE_ONE);
-		ret |= gc5035_write_reg(gc5035->client,
-			GC5035_REG_VTS_H,
-			((ctrl->val + gc5035->cur_mode->height) >> 8) & 0xff);
-		ret |= gc5035_write_reg(gc5035->client,
-			GC5035_REG_VTS_L,
-			(ctrl->val + gc5035->cur_mode->height) & 0xff);
 		gc5035->cur_vts = ctrl->val + gc5035->cur_mode->height;
+		ret = gc5035_write_ae(gc5035);
 		gc5035_modify_fps_info(gc5035);
 		break;
 	case V4L2_CID_TEST_PATTERN:
@@ -1219,6 +1215,9 @@ static int gc5035_initialize_controls(struct gc5035 *gc5035)
 
 	handler = &gc5035->ctrl_handler;
 	mode = gc5035->cur_mode;
+	gc5035->cur_vts = mode->vts_def;
+	gc5035->cur_exposure = mode->exp_def;
+	gc5035->cur_gain = GC5035_GAIN_DEFAULT;
 	ret = v4l2_ctrl_handler_init(handler, 8);
 	if (ret)
 		return ret;

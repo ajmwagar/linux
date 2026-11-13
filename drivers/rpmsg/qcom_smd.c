@@ -834,7 +834,7 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 	ret = wait_event_interruptible_timeout(channel->state_change_event,
 			channel->remote_state == SMD_CHANNEL_OPENING ||
 			channel->remote_state == SMD_CHANNEL_OPENED,
-			HZ);
+			10 * HZ);
 	if (!ret) {
 		dev_err(&edge->dev, "remote side did not enter opening state\n");
 		goto out_close_timeout;
@@ -845,7 +845,7 @@ static int qcom_smd_channel_open(struct qcom_smd_channel *channel,
 	/* Wait for remote to enter opened */
 	ret = wait_event_interruptible_timeout(channel->state_change_event,
 			channel->remote_state == SMD_CHANNEL_OPENED,
-			HZ);
+			10 * HZ);
 	if (!ret) {
 		dev_err(&edge->dev, "remote side did not enter open state\n");
 		goto out_close_timeout;

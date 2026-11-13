@@ -54,6 +54,22 @@
 #define GC02M2_MODE_SW_STANDBY	0x00
 #define GC02M2_MODE_STREAMING	0x90
 
+static int stream_value = GC02M2_MODE_STREAMING;
+module_param(stream_value, int, 0644);
+MODULE_PARM_DESC(stream_value, "Stream-on register value");
+
+static int power_delay_ms = 10;
+module_param(power_delay_ms, int, 0644);
+MODULE_PARM_DESC(power_delay_ms, "Delay after global init");
+
+static int stream_delay_ms = 10;
+module_param(stream_delay_ms, int, 0644);
+MODULE_PARM_DESC(stream_delay_ms, "Delay before stream-on");
+
+static int stream_retry = 3;
+module_param(stream_retry, int, 0644);
+MODULE_PARM_DESC(stream_retry, "Retry stream-on register writes");
+
 #define GC02M2_REG_EXPOSURE_H	0x03
 #define GC02M2_REG_EXPOSURE_L	0x04
 #define	GC02M2_EXPOSURE_MIN		4
@@ -184,7 +200,7 @@ static const struct regval gc02m2_global_regs[] = {
 	{0x0a, 0x02},
 	{0x0d, 0x04},
 	{0x0e, 0xbc},
-	{0x17, 0x80},
+	{0x17, 0x83},
 	{0x19, 0x04},
 	{0x24, 0x00},
 	{0x56, 0x20},
@@ -346,7 +362,7 @@ static const struct regval gc02m2_global_regs[] = {
 	{0x01, 0x23},
 	{0x03, 0xce},
 	{0x04, 0x48},
-	{0x15, 0x01},
+	{0x15, 0x00},
 	{0x21, 0x10},
 	{0x22, 0x05},
 	{0x23, 0x20},
@@ -658,7 +674,7 @@ static long gc02m2_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		if (stream) {
 			ret = gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
 			ret |= gc02m2_write_reg(gc02m2->client, GC02M2_MODE_SELECT,
-						 GC02M2_MODE_STREAMING);
+						 stream_value);
 			ret |= gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
 		} else {
 			ret = gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
@@ -859,7 +875,9 @@ static void __gc02m2_power_off(struct gc02m2 *gc02m2)
 
 static int __gc02m2_start_stream(struct gc02m2 *gc02m2)
 {
-	int ret;
+	struct device *dev = &gc02m2->client->dev;
+	u8 mode = 0;
+	int ret, i;
 
 	/* In case these controls are set before streaming */
 	mutex_unlock(&gc02m2->mutex);
@@ -868,10 +886,22 @@ static int __gc02m2_start_stream(struct gc02m2 *gc02m2)
 	if (ret)
 		return ret;
 
-	ret = gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
-	ret |= gc02m2_write_reg(gc02m2->client, GC02M2_MODE_SELECT,
-				 GC02M2_MODE_STREAMING);
-	ret |= gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
+	msleep(stream_delay_ms);
+	for (i = 0; i < stream_retry; i++) {
+		int wret;
+
+		wret = gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
+		wret |= gc02m2_write_reg(gc02m2->client, GC02M2_MODE_SELECT,
+					 GC02M2_MODE_STREAMING);
+		wret |= gc02m2_write_reg(gc02m2->client, GC02M2_PAGE_SELECT, 0x00);
+		msleep(10);
+		gc02m2_read_reg(gc02m2->client, GC02M2_MODE_SELECT, &mode);
+		dev_info(dev, "stream attempt %d mode=0x%02x wret=%d\n",
+			 i, mode, wret);
+		ret |= wret;
+		if (mode == stream_value)
+			break;
+	}
 
 	return ret;
 }
@@ -950,6 +980,7 @@ static int gc02m2_s_power(struct v4l2_subdev *sd, int on)
 			pm_runtime_put_noidle(&client->dev);
 			goto unlock_and_return;
 		}
+		msleep(power_delay_ms);
 
 		gc02m2->power_on = true;
 	} else {

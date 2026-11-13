@@ -766,7 +766,6 @@ config SMB1360_FG
 	  gauge but Linux has no write-capable charger driver.  This
 	  driver never writes charger configuration.
 
-
 config CHARGER_PM8916_LBC
 	tristate "Qualcomm PM8916 Linear Battery Charger support"
 	depends on MFD_SPMI_PMIC || COMPILE_TEST

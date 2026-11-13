@@ -523,10 +523,8 @@
  *   blsp1_i2c2 @ 0x14 (fragment@46, IRQ GPIO 13, usb-id PM8916 GPIO4,
  *   float 0x1130 mV, 2800 mAh). The vendor kernel has a full smb1360_*
  *   driver built in (out/kallsyms.txt) and uses it as the USB extcon
- *   (fragment@47), so SMB1360 is the real charger. A read-only SMB1360
- *   fuel-gauge driver now exists, but the chip does not answer on the live
- *   unit, so the node below stays disabled. No charger-authority change is
- *   implied by the telemetry node.
+ *   (fragment@47), so SMB1360 is the real charger. There is NO mainline
+ *   smb1360 driver. Until that is written, do not enable any charger node.
  * - Cameras (CCI, two "qcom,camera" nodes), fingerprint (fpc1020),
  *   smart PA (aw88xxx/aw8155), NFC (nq-nci), USB-C (wusb3801), sensors.
  * - Modem/WCNSS/GPU: left at upstream defaults.
@@ -552,46 +550,6 @@
 
 &usb_hs_phy {
 	status = "okay";
-};
-
-/ {
-	battery-voltage {
-		compatible = "cat,s22flip-battery-voltage";
-		io-channel-names = "vbat", "temp";
-		io-channels = <&pm8916_vadc VADC_VBAT_SNS>,
-			      <&pm8916_vadc VADC_LR_MUX1_BAT_THERM>;
-	};
-};
-
-&pm8916_vadc {
-	channel@6 {
-		reg = <VADC_VBAT_SNS>;
-		qcom,pre-scaling = <1 3>;
-	};
-
-	/* Stock uses scale-function 26, the QRD215 battery-thermistor table. */
-	channel@30 {
-		reg = <VADC_LR_MUX1_BAT_THERM>;
-		label = "batt_therm";
-		qcom,ratiometric;
-		qcom,hw-settle-time = <2000>;
-		qcom,avg-samples = <2>;
-	};
-};
-
-&blsp1_i2c2 {
-	status = "okay";
-
-	fuel-gauge@14 {
-		compatible = "qcom,smb1360-chg-fg";
-		reg = <0x14>;
-		qcom,fg-batt-capacity-mah = <3000>;
-		qcom,fg-cutoff-voltage-mv = <3400>;
-		qcom,float-voltage-mv = <4200>;
-		qcom,iterm-ma = <100>;
-		/* No ACK at the stock bus/address on the current unit. */
-		status = "disabled";
-	};
 };
 
 /*
